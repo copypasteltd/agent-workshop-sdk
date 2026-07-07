@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.lingban-data/
+runtime/
+outputs/
+coverage/
+*.log
+pnpm-debug.log*
+.env.local
+.env.*.local
+.idea/
+.vscode/
