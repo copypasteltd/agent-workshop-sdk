@@ -14,10 +14,13 @@ type EventParserOptions = {
 };
 
 function stripAnsi(value: string) {
-  return value.replace(
-    /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\))/g,
-    ""
-  );
+  return value
+    .replace(
+      /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\))/g,
+      ""
+    )
+    .replace(/\d;[^\u0007]*\u0007/g, "")
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, "");
 }
 
 function createMessageEvent(

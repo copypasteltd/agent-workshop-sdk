@@ -2,6 +2,7 @@ import chokidar, { type FSWatcher } from "chokidar";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { bridgeEventSchema, runFileEntrySchema, type BridgeEvent, type RunFileEntry } from "@lingban/contracts";
+import type { FileWatcherDiagnostics } from "../observability.js";
 
 type FileWatcherOptions = {
   runId: string;
@@ -81,6 +82,15 @@ async function walk(rootPath: string): Promise<RunFileEntry[]> {
 export class FileWatcher {
   #options: Required<Omit<FileWatcherOptions, "outputsPath">> & { outputsPath: string | null };
   #watcher: FSWatcher | null = null;
+  #watchTargets: string[] = [];
+  #syncCount = 0;
+  #fileChangedEventsTotal = 0;
+  #lastSyncAt: string | null = null;
+  #lastSyncFileCount = 0;
+  #lastMutationAt: string | null = null;
+  #lastChangedPath: string | null = null;
+  #lastSyncErrorAt: string | null = null;
+  #lastSyncErrorMessage: string | null = null;
 
   constructor(options: FileWatcherOptions) {
     this.#options = {
@@ -101,6 +111,7 @@ export class FileWatcher {
     if (this.#options.outputsPath) {
       watchTargets.push(this.#options.outputsPath);
     }
+    this.#watchTargets = [...watchTargets];
 
     this.#watcher = chokidar.watch(watchTargets, {
       ignoreInitial: true,
@@ -111,6 +122,7 @@ export class FileWatcher {
     });
 
     const onMutation = async (absolutePath: string) => {
+      this.#lastMutationAt = this.#options.now();
       if (this.#isUnderTarget(absolutePath)) {
         await this.emitFileChanged(absolutePath);
       }
@@ -143,20 +155,33 @@ export class FileWatcher {
   }
 
   async sync() {
-    const files = await this.listFiles();
-    this.#options.emit(
-      bridgeEventSchema.parse({
-        type: "files.synced",
-        runId: this.#options.runId,
-        files,
-        occurredAt: this.#options.now(),
-      })
-    );
-    return files;
+    try {
+      const files = await this.listFiles();
+      this.#syncCount += 1;
+      this.#lastSyncAt = this.#options.now();
+      this.#lastSyncFileCount = files.length;
+      this.#lastSyncErrorAt = null;
+      this.#lastSyncErrorMessage = null;
+      this.#options.emit(
+        bridgeEventSchema.parse({
+          type: "files.synced",
+          runId: this.#options.runId,
+          files,
+          occurredAt: this.#lastSyncAt,
+        })
+      );
+      return files;
+    } catch (error) {
+      this.#lastSyncErrorAt = this.#options.now();
+      this.#lastSyncErrorMessage = error instanceof Error ? error.message : String(error);
+      throw error;
+    }
   }
 
   async emitFileChanged(absolutePath: string) {
     const entry = await buildRunFileEntry(absolutePath);
+    this.#fileChangedEventsTotal += 1;
+    this.#lastChangedPath = entry.path;
     this.#options.emit(
       bridgeEventSchema.parse({
         type: "file.changed",
@@ -170,6 +195,23 @@ export class FileWatcher {
   #isUnderTarget(absolutePath: string) {
     const relative = path.relative(this.#options.targetPath, absolutePath);
     return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+  }
+
+  getDiagnostics(): FileWatcherDiagnostics {
+    return {
+      running: this.#watcher !== null,
+      targetPath: this.#options.targetPath,
+      outputsPath: this.#options.outputsPath,
+      watchTargets: [...this.#watchTargets],
+      syncCount: this.#syncCount,
+      fileChangedEventsTotal: this.#fileChangedEventsTotal,
+      lastSyncAt: this.#lastSyncAt,
+      lastSyncFileCount: this.#lastSyncFileCount,
+      lastMutationAt: this.#lastMutationAt,
+      lastChangedPath: this.#lastChangedPath,
+      lastSyncErrorAt: this.#lastSyncErrorAt,
+      lastSyncErrorMessage: this.#lastSyncErrorMessage,
+    };
   }
 }
 

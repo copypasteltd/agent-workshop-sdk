@@ -3,7 +3,9 @@ import path from "node:path";
 import { ArtifactPublisher } from "./bridge/artifact-publisher.js";
 import { CodexSession } from "./bridge/codex-session.js";
 import { FileWatcher } from "./bridge/file-watcher.js";
+import { McpCallAuditWatcher } from "./bridge/mcp-call-audit-watcher.js";
 import { McpMaterializer } from "./bridge/mcp-materializer.js";
+import { RemoteMcpProxyServer } from "./bridge/remote-mcp-proxy-server.js";
 import { createRunControlServer } from "./bridge/run-control-server.js";
 import { SecretLoader, type SecretValueMap } from "./bridge/secret-loader.js";
 
@@ -14,11 +16,15 @@ export type ContainerBridgeOptions = {
   outputsPath?: string;
   secretValues?: SecretValueMap;
   emitEvent?: (event: BridgeEvent) => void;
+  mcpStdioAllowedPathPrefixes?: string[];
   codex?: {
     command?: string;
     args?: string[];
     cwd?: string;
     env?: Record<string, string>;
+    restartMaxAttempts?: number;
+    restartBackoffMs?: number;
+    restartResetWindowMs?: number;
   };
 };
 
@@ -30,6 +36,12 @@ function resolveContext(options?: ContainerBridgeOptions) {
   return bridgeSessionContextSchema.parse({
     runId: process.env.RUN_ID ?? "run_bootstrap",
     workspaceId: process.env.WORKSPACE_ID ?? "wsp_bootstrap",
+    requestedByUserId: null,
+    taskVersionId: null,
+    sessionVersionId: null,
+    entrySurface: null,
+    workspaceContextKey: null,
+    serviceId: null,
     targetPath: process.env.TARGET_PATH ?? "/workspace/target",
     initialPrompt:
       process.env.INITIAL_PROMPT ??
@@ -37,6 +49,7 @@ function resolveContext(options?: ContainerBridgeOptions) {
     requestedInitialMessage: null,
     credentialMounts: [],
     mcpBindings: [],
+    mcpNetworkPolicies: [],
   });
 }
 
@@ -59,6 +72,14 @@ export async function buildContainerBridge(options: ContainerBridgeOptions = {})
     outputsPath,
     emit: emitEvent,
   });
+  const remoteMcpProxyServer = new RemoteMcpProxyServer({
+    context,
+  });
+  const mcpCallAuditWatcher = new McpCallAuditWatcher({
+    context,
+    auditLogPath: path.join(runtimeDir, "mcp-calls.ndjson"),
+    emit: emitEvent,
+  });
 
   const codexSession = new CodexSession({
     context,
@@ -71,8 +92,15 @@ export async function buildContainerBridge(options: ContainerBridgeOptions = {})
         RUN_ID: context.runId,
         WORKSPACE_ID: context.workspaceId,
         TARGET_PATH: context.targetPath,
+        OUTPUTS_PATH: outputsPath,
+        RUNTIME_DIR: runtimeDir,
         ...options.codex?.env,
       },
+    },
+    recovery: {
+      maxRestartAttempts: options.codex?.restartMaxAttempts,
+      restartBackoffMs: options.codex?.restartBackoffMs,
+      restartResetWindowMs: options.codex?.restartResetWindowMs,
     },
   });
 
@@ -80,6 +108,7 @@ export async function buildContainerBridge(options: ContainerBridgeOptions = {})
     session: codexSession,
     fileWatcher,
     artifactPublisher,
+    mcpCallAuditWatcher,
     emit: emitEvent,
   });
 
@@ -88,22 +117,40 @@ export async function buildContainerBridge(options: ContainerBridgeOptions = {})
     context,
     controlServer,
     async start() {
-      const materializer = new McpMaterializer({
-        context,
-        runtimeDir,
-      });
       const secretLoader = new SecretLoader({
         context,
         secretValues: options.secretValues,
       });
+      await remoteMcpProxyServer.start();
+      const mcpMaterializer = new McpMaterializer({
+        context,
+        runtimeDir,
+        stdioAllowedPathPrefixes: options.mcpStdioAllowedPathPrefixes,
+        remoteProxyBaseUrl: remoteMcpProxyServer.httpBaseUrl,
+        remoteProxyWebsocketBaseUrl: remoteMcpProxyServer.websocketBaseUrl,
+      });
 
-      const [mcp, secrets] = await Promise.all([
-        materializer.materialize(),
-        secretLoader.materialize(),
-      ]);
+      let mcp;
+      let secrets;
+      try {
+        [mcp, secrets] = await Promise.all([
+          mcpMaterializer.materialize(),
+          secretLoader.materialize(),
+        ]);
+      } catch (error) {
+        await remoteMcpProxyServer.stop().catch(() => undefined);
+        throw error;
+      }
 
-      codexSession.setRuntimeEnv(secrets.env);
+      codexSession.setRuntimeEnv({
+        ...secrets.env,
+        LINGBAN_MCP_CONFIG_PATH: mcp.configPath,
+        LINGBAN_MCP_BINDINGS_PATH: mcp.bindingsPath,
+        LINGBAN_MCP_AUDIT_LOG_PATH: mcp.auditLogPath,
+        LINGBAN_MCP_AUDIT_FORMAT: "jsonl-v1",
+      });
       await fileWatcher.start();
+      await mcpCallAuditWatcher.start();
       codexSession.start();
 
       return {
@@ -114,7 +161,9 @@ export async function buildContainerBridge(options: ContainerBridgeOptions = {})
     },
     async stop() {
       codexSession.stop();
+      await mcpCallAuditWatcher.stop();
       await fileWatcher.stop();
+      await remoteMcpProxyServer.stop().catch(() => undefined);
     },
     async listFiles() {
       return fileWatcher.listFiles();
@@ -122,5 +171,12 @@ export async function buildContainerBridge(options: ContainerBridgeOptions = {})
     async flushArtifacts() {
       return artifactPublisher.flush();
     },
+    getDiagnostics() {
+      return {
+        remoteMcpProxy: remoteMcpProxyServer.getDiagnostics(),
+      };
+    },
   };
 }
+
+export { ApiConnector } from "./transports/api-connector.js";
