@@ -1,77 +1,55 @@
-# 灵办词元 Runtime SDK / Lingban Runtime SDK
+# 灵办词元 Runtime Bridge / Lingban Runtime Bridge
 
-## 概览 / Overview
+## 仓库定位 / Repository Role
 
-本仓库承载灵办词元的运行时 bridge 层。它运行在独立进程或容器内，负责连接 Codex CLI、物化 MCP 与凭证、监听文件变化、发布 artifact、接受控制命令，并可将事件回传给 API。
+本目录是灵办词元的运行桥接层，位于 `app/container-bridge`。它直接托管 Codex CLI 会话，并把文件、事件、MCP、凭证与控制指令接到平台后端。
 
-This repository hosts the Lingban runtime bridge layer. It runs inside a dedicated process or container, connects to Codex CLI, materializes MCP bindings and secrets, watches files, publishes artifacts, accepts control commands, and can report events back to the API.
+This directory contains the Lingban runtime bridge at `app/container-bridge`. It directly hosts the Codex CLI session and wires files, events, MCP, credentials, and control commands back into the platform backend.
 
-## 当前职责 / Responsibilities
+## 主要职责 / Responsibilities
 
-- 管理 Codex PTY 会话
+- 启动与管理 Codex CLI PTY 会话
 - 解析 stdout / stderr 为结构化事件
-- 监听 target path 与 outputs 变化
-- 发布 artifact 事件
-- 物化 MCP 配置
-- 物化凭证 env / file
-- 提供本地控制 HTTP
-- 通过 internal API 向后端注册与回传事件
-- 在注册 payload 中携带外部可达 control URL，并周期性 refresh register
+- 监听 target path 与输出目录变化
+- 发布 artifact、文件、诊断与状态事件
+- 物化 MCP 配置与第三方凭证
+- 暴露本地控制 HTTP，接入 backend internal API
 
-- Manage the Codex PTY session
-- Parse stdout / stderr into structured events
-- Watch target-path and outputs changes
-- Publish artifact events
-- Materialize MCP configuration
-- Materialize secrets as env vars or files
-- Expose a local control HTTP endpoint
-- Register with the backend and send events through the internal API
-- Carry the externally reachable control URL in bridge registration and periodically refresh the registration
+## 代码结构 / Code Structure
 
-## 技术栈 / Tech Stack
-
-- TypeScript
-- node-pty
-- chokidar
-- Zod
-- Workspace-shared package:
-  - `@lingban/contracts`
-
-## 目录结构 / Directory Structure
-
-```text
-src/
-  bridge/
-    codex-session.ts
-    event-parser.ts
-    file-watcher.ts
-    artifact-publisher.ts
-    mcp-materializer.ts
-    secret-loader.ts
-    run-control-server.ts
-  transports/
-    control-http.ts
-    api-connector.ts
-  cli.ts
-  index.ts
-```
-
-## 开发命令 / Scripts
-
-```bash
-pnpm build
-pnpm typecheck
-pnpm start:runtime
-```
+| 路径 | 作用 | 关键文件 |
+| --- | --- | --- |
+| `src/bridge/codex-session.ts` | Codex PTY 生命周期管理 | `codex-session.ts` |
+| `src/bridge/event-parser.ts` | stdout / stderr 事件解析 | `event-parser.ts` |
+| `src/bridge/file-watcher.ts` | 文件监听与变更捕获 | `file-watcher.ts` |
+| `src/bridge/artifact-publisher.ts` | 产物发布与回写 | `artifact-publisher.ts` |
+| `src/bridge/mcp-materializer.ts` | MCP 配置落地 | `mcp-materializer.ts` |
+| `src/bridge/mcp-call-audit-watcher.ts` | MCP 调用审计监听 | `mcp-call-audit-watcher.ts` |
+| `src/bridge/remote-mcp-proxy-server.ts` | 远端 MCP 代理接线 | `remote-mcp-proxy-server.ts` |
+| `src/bridge/secret-loader.ts` | secret 注入与文件物化 | `secret-loader.ts` |
+| `src/bridge/run-control-server.ts` | 本地运行控制接口 | `run-control-server.ts` |
+| `src/transports/api-connector.ts` | 与 API 的 internal 通信 | `api-connector.ts` |
+| `src/transports/control-http.ts` | 对外控制 HTTP 适配 | `control-http.ts` |
+| `src/runtime-egress-firewall.ts` | 运行时出网限制 | `runtime-egress-firewall.ts` |
+| `src/observability.ts` | 日志与观测 | `observability.ts` |
 
 ## 运行模式 / Runtime Modes
 
-- Embedded mode: imported and launched inside the API process for local development
-- Managed process mode: launched as an independent process by the worker
-- Container mode: prepared for runner-image execution through the generated runtime files
+| 模式 | 说明 |
+| --- | --- |
+| Embedded | 本地调试时由上层直接引入 |
+| Managed Process | 由 run-worker 启动独立进程 |
+| Container Runtime | 使用 runtime 物料在隔离环境中运行 |
 
-## 状态 / Status
+## 开发命令 / Commands
 
-当前仓库已经具备 PTY 管理、文件监听、artifact 发现、MCP/secret 物化、本地控制接口、internal API 回传，以及 bridge register 刷新能力。后续将继续补强真实容器网络控制、生产观测与自愈能力。
+```bash
+pnpm -C app/container-bridge build
+pnpm -C app/container-bridge typecheck
+pnpm -C app/container-bridge start:runtime
+pnpm -C app/container-bridge test
+```
 
-The repository already supports PTY management, file watching, artifact discovery, MCP/secret materialization, a local control endpoint, internal API callbacks, and periodic bridge-registration refresh. The next steps are stronger container-network control, production observability, and self-healing.
+## 当前状态 / Current Status
+
+当前 bridge 已具备 PTY 管理、文件监听、artifact 发布、MCP/secret 物化、控制面接线与 internal callback 回传能力。后续重点是更严格的网络治理、远端 MCP 代理强化与故障恢复机制。
