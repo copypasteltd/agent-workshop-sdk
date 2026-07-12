@@ -10,6 +10,7 @@ import {
   type McpCallObservation,
   type McpCallRecord,
 } from "@lingban/contracts";
+import { toErrorMessage } from "@lingban/shared";
 import type { McpCallAuditWatcherDiagnostics } from "../observability.js";
 
 type McpCallAuditWatcherOptions = {
@@ -18,14 +19,6 @@ type McpCallAuditWatcherOptions = {
   emit: (event: BridgeEvent) => void;
   now?: () => string;
 };
-
-function toErrorMessage(error: unknown) {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return String(error);
-}
 
 function buildCallId(observation: McpCallObservation) {
   return observation.callId?.trim() || `mcpcall_${randomUUID()}`;

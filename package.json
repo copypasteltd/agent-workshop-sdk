@@ -13,14 +13,17 @@
   },
   "scripts": {
     "start:runtime": "node dist/cli.js",
-    "build": "pnpm -C ../.. --filter @lingban/config --filter @lingban/contracts --filter @lingban/mcp build && tsc -p tsconfig.json",
+    "build:local": "tsc -p tsconfig.json",
+    "build": "pnpm -C ../.. --filter @lingban/config --filter @lingban/contracts --filter @lingban/mcp --filter @lingban/shared build && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm build && node --test tests/api-connector.test.mjs tests/cli-api-forwarding.test.mjs tests/cli-recovery-forwarding.test.mjs tests/control-http-observability.test.mjs tests/mcp-materializer.test.mjs tests/remote-mcp-proxy-server.test.mjs tests/runtime-egress-firewall.test.mjs"
+    "test:compiled": "node --test tests/api-connector.test.mjs tests/cli-api-forwarding.test.mjs tests/cli-recovery-forwarding.test.mjs tests/control-http-observability.test.mjs tests/mcp-materializer.test.mjs tests/remote-mcp-proxy-server.test.mjs tests/runtime-egress-firewall.test.mjs",
+    "test": "pnpm build && pnpm test:compiled"
   },
   "dependencies": {
     "@lingban/config": "workspace:*",
     "@lingban/contracts": "workspace:*",
     "@lingban/mcp": "workspace:*",
+    "@lingban/shared": "workspace:*",
     "chokidar": "^4.0.3",
     "node-pty": "^1.0.0",
     "zod": "^4.1.5"

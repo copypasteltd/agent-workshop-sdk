@@ -9,6 +9,7 @@ import {
   type BridgeSessionContext,
   type RunStatus,
 } from "@lingban/contracts";
+import { toErrorMessage } from "@lingban/shared";
 import { buildContainerBridge } from "./index.js";
 import { buildBridgeRuntimeMetricsText, incrementCounter } from "./observability.js";
 import { ApiConnector } from "./transports/api-connector.js";
@@ -19,14 +20,6 @@ const TERMINAL_STATUSES = new Set<RunStatus>(["SUCCEEDED", "FAILED", "CANCELLED"
 async function loadContextFromFile(filePath: string): Promise<BridgeSessionContext> {
   const content = await fs.readFile(filePath, "utf8");
   return bridgeSessionContextSchema.parse(JSON.parse(content) as unknown);
-}
-
-function toErrorMessage(error: unknown) {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return String(error);
 }
 
 function applyRuntimeUmaskFromEnv() {

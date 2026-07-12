@@ -290,6 +290,42 @@ test("ApiConnector can materialize run credentials through the internal API", as
   }
 });
 
+test("ApiConnector can download session-pack archives through the internal API", async () => {
+  const { ApiConnector } = await importApiConnector();
+  const token = "internal-test-token";
+  const archiveBytes = Buffer.from("session-pack-archive-test");
+
+  const server = await startJsonServer(async (entry, response) => {
+    assert.equal(entry.method, "GET");
+    assert.equal(entry.url, "/internal/runs/run_00000078/session-pack/archive");
+    assert.equal(entry.headers["x-lingban-internal-token"], token);
+
+    response.writeHead(200, {
+      "content-type": "application/gzip",
+      "x-lingban-session-pack-source": "imported",
+      "x-lingban-session-pack-file-name": "sev_00000078.session-pack.json.gz",
+    });
+    response.end(archiveBytes);
+  });
+
+  try {
+    const connector = new ApiConnector({
+      baseUrl: server.baseUrl,
+      authToken: token,
+      requestTimeoutMs: 1_000,
+    });
+
+    const response = await connector.downloadRunSessionPackArchive("run_00000078");
+    assert.equal(response.fileName, "sev_00000078.session-pack.json.gz");
+    assert.equal(response.source, "imported");
+    assert.equal(response.contentType, "application/gzip");
+    assert.equal(Buffer.compare(Buffer.from(response.content), archiveBytes), 0);
+    assert.equal(server.requests.length, 1);
+  } finally {
+    await server.close();
+  }
+});
+
 test("ApiConnector can fetch runtime recovery candidates through the internal API", async () => {
   const { ApiConnector } = await importApiConnector();
   const token = "internal-test-token";
