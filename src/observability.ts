@@ -3,6 +3,7 @@ import type { RunControlCommand } from "@lingban/contracts";
 export type CounterMap = Record<string, number>;
 
 export type CodexSessionDiagnostics = {
+  protocol: "legacy-pty" | "app-server";
   running: boolean;
   recovering: boolean;
   status: string;
@@ -18,6 +19,12 @@ export type CodexSessionDiagnostics = {
   restartBudgetUsed: number;
   replayHistoryCount: number;
   replayHistoryBytes: number;
+  threadId: string | null;
+  currentTurnId: string | null;
+  currentTurnState: string | null;
+  eventHighWatermark: number;
+  pendingRequestCount: number;
+  pendingApprovalCount: number;
   startedAt: string | null;
   lastLaunchAt: string | null;
   lastStdoutAt: string | null;
@@ -173,6 +180,7 @@ const runControlCommandTypes = [
   "ping",
   "syncFiles",
   "flushArtifacts",
+  "captureBarrier",
 ] as const satisfies readonly RunControlCommand["type"][];
 
 export function createCommandCounterMap(): Record<RunControlCommand["type"], number> {
@@ -183,6 +191,7 @@ export function createCommandCounterMap(): Record<RunControlCommand["type"], num
     ping: 0,
     syncFiles: 0,
     flushArtifacts: 0,
+    captureBarrier: 0,
   };
 }
 

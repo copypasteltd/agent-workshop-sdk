@@ -175,6 +175,7 @@ test("bridge CLI forwards register, status, events, and artifacts through ApiCon
           LINGBAN_API_BASE_URL: captureServer.baseUrl,
           LINGBAN_INTERNAL_AUTH_TOKEN: apiToken,
           CODEX_BIN: process.execPath,
+          CODEX_RUNTIME_PROTOCOL: "legacy-pty",
           CODEX_ARGS_JSON: JSON.stringify(["-e", codexScript]),
         },
         stdio: ["ignore", "pipe", "pipe"],

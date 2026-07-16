@@ -1,6 +1,6 @@
 import { runControlCommandSchema, type BridgeEvent, type RunControlCommand } from "@lingban/contracts";
 import type { ArtifactPublisher } from "./artifact-publisher.js";
-import type { CodexSession } from "./codex-session.js";
+import type { AgentSession } from "./agent-session.js";
 import type { FileWatcher } from "./file-watcher.js";
 import type { McpCallAuditWatcher } from "./mcp-call-audit-watcher.js";
 import {
@@ -9,7 +9,7 @@ import {
 } from "../observability.js";
 
 type RunControlServerOptions = {
-  session: CodexSession;
+  session: AgentSession;
   fileWatcher: FileWatcher;
   artifactPublisher: ArtifactPublisher;
   mcpCallAuditWatcher: McpCallAuditWatcher;
@@ -57,13 +57,13 @@ export class RunControlServer {
     try {
       switch (parsed.type) {
         case "sendMessage":
-          this.#options.session.sendMessage(parsed.payload);
+          await this.#options.session.sendMessage(parsed.payload);
           return { ok: true, command: parsed.type };
         case "approve":
-          this.#options.session.approve(parsed.payload);
+          await this.#options.session.approve(parsed.payload);
           return { ok: true, command: parsed.type };
         case "cancel":
-          this.#options.session.cancel(parsed.reason);
+          await this.#options.session.cancel(parsed.reason);
           return { ok: true, command: parsed.type };
         case "ping": {
           const heartbeat = this.#options.session.heartbeat();
@@ -77,6 +77,25 @@ export class RunControlServer {
         case "flushArtifacts": {
           const artifacts = await this.#options.artifactPublisher.flush();
           return { ok: true, command: parsed.type, artifacts };
+        }
+        case "captureBarrier": {
+          const session = this.#options.session.getDiagnostics();
+          if (session.protocol !== "app-server" || !session.threadId) {
+            throw new Error("Capture barrier requires an initialized Codex App Server thread");
+          }
+          if (session.currentTurnState === "in_progress" || session.currentTurnState === "pending") {
+            throw new Error("Capture barrier requires a completed turn");
+          }
+          return {
+            ok: true,
+            command: parsed.type,
+            boundary: {
+              threadId: session.threadId,
+              throughTurnId: session.currentTurnId,
+              eventHighWatermark: session.eventHighWatermark,
+              barrierReachedAt: this.#options.now?.() ?? new Date().toISOString(),
+            },
+          };
         }
       }
     } catch (error) {

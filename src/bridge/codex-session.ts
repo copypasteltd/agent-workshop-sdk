@@ -297,6 +297,7 @@ export class CodexSession {
 
   getDiagnostics(): CodexSessionDiagnostics {
     return {
+      protocol: "legacy-pty",
       running: this.#pty !== null,
       recovering: this.#recovering,
       status: this.#status,
@@ -312,6 +313,12 @@ export class CodexSession {
       restartBudgetUsed: this.#restartBudgetUsed,
       replayHistoryCount: this.#replayHistory.length,
       replayHistoryBytes: this.#replayHistoryBytes,
+      threadId: null,
+      currentTurnId: null,
+      currentTurnState: null,
+      eventHighWatermark: 0,
+      pendingRequestCount: 0,
+      pendingApprovalCount: 0,
       startedAt: this.#startedAt,
       lastLaunchAt: this.#lastLaunchAt,
       lastStdoutAt: this.#lastStdoutAt,

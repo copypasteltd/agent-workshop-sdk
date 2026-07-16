@@ -2,6 +2,8 @@ import { bridgeSessionContextSchema, type BridgeEvent, type BridgeSessionContext
 import path from "node:path";
 import { ArtifactPublisher } from "./bridge/artifact-publisher.js";
 import { CodexSession } from "./bridge/codex-session.js";
+import { AppServerSession } from "./bridge/app-server-session.js";
+import type { AgentSession } from "./bridge/agent-session.js";
 import { FileWatcher } from "./bridge/file-watcher.js";
 import { McpCallAuditWatcher } from "./bridge/mcp-call-audit-watcher.js";
 import { McpMaterializer } from "./bridge/mcp-materializer.js";
@@ -18,6 +20,7 @@ export type ContainerBridgeOptions = {
   emitEvent?: (event: BridgeEvent) => void;
   mcpStdioAllowedPathPrefixes?: string[];
   codex?: {
+    protocol?: "legacy-pty" | "app-server";
     command?: string;
     args?: string[];
     cwd?: string;
@@ -25,6 +28,7 @@ export type ContainerBridgeOptions = {
     restartMaxAttempts?: number;
     restartBackoffMs?: number;
     restartResetWindowMs?: number;
+    appServerRequestTimeoutMs?: number;
   };
 };
 
@@ -81,28 +85,37 @@ export async function buildContainerBridge(options: ContainerBridgeOptions = {})
     emit: emitEvent,
   });
 
-  const codexSession = new CodexSession({
-    context,
-    emit: emitEvent,
-    launch: {
-      command: options.codex?.command ?? process.env.CODEX_BIN ?? "codex",
-      args: options.codex?.args ?? [],
-      cwd: options.codex?.cwd ?? context.targetPath,
-      env: {
-        RUN_ID: context.runId,
-        WORKSPACE_ID: context.workspaceId,
-        TARGET_PATH: context.targetPath,
-        OUTPUTS_PATH: outputsPath,
-        RUNTIME_DIR: runtimeDir,
-        ...options.codex?.env,
-      },
+  const protocol = options.codex?.protocol ?? "app-server";
+  const launch = {
+    command: options.codex?.command ?? process.env.CODEX_BIN ?? "codex",
+    args: options.codex?.args ?? [],
+    cwd: options.codex?.cwd ?? context.targetPath,
+    env: {
+      RUN_ID: context.runId,
+      WORKSPACE_ID: context.workspaceId,
+      TARGET_PATH: context.targetPath,
+      OUTPUTS_PATH: outputsPath,
+      RUNTIME_DIR: runtimeDir,
+      ...options.codex?.env,
     },
-    recovery: {
-      maxRestartAttempts: options.codex?.restartMaxAttempts,
-      restartBackoffMs: options.codex?.restartBackoffMs,
-      restartResetWindowMs: options.codex?.restartResetWindowMs,
-    },
-  });
+  };
+  const codexSession: AgentSession = protocol === "app-server"
+    ? new AppServerSession({
+        context,
+        emit: emitEvent,
+        launch,
+        requestTimeoutMs: options.codex?.appServerRequestTimeoutMs,
+      })
+    : new CodexSession({
+        context,
+        emit: emitEvent,
+        launch,
+        recovery: {
+          maxRestartAttempts: options.codex?.restartMaxAttempts,
+          restartBackoffMs: options.codex?.restartBackoffMs,
+          restartResetWindowMs: options.codex?.restartResetWindowMs,
+        },
+      });
 
   const controlServer = createRunControlServer({
     session: codexSession,
@@ -151,7 +164,7 @@ export async function buildContainerBridge(options: ContainerBridgeOptions = {})
       });
       await fileWatcher.start();
       await mcpCallAuditWatcher.start();
-      codexSession.start();
+      await codexSession.start();
 
       return {
         context,
@@ -160,7 +173,7 @@ export async function buildContainerBridge(options: ContainerBridgeOptions = {})
       };
     },
     async stop() {
-      codexSession.stop();
+      await codexSession.stop();
       await mcpCallAuditWatcher.stop();
       await fileWatcher.stop();
       await remoteMcpProxyServer.stop().catch(() => undefined);
@@ -173,6 +186,7 @@ export async function buildContainerBridge(options: ContainerBridgeOptions = {})
     },
     getDiagnostics() {
       return {
+        protocol,
         remoteMcpProxy: remoteMcpProxyServer.getDiagnostics(),
       };
     },

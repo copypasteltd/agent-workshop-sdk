@@ -9,6 +9,15 @@ import type {
   RunRuntimeUpdate,
   RunSnapshot,
   RunStatus,
+  AgentRuntimeEventRecord,
+  AgentThreadRecord,
+  CompleteSessionCaptureInput,
+  FailSessionCaptureInput,
+  SessionCaptureBoundary,
+  SessionCaptureLease,
+  SessionCaptureObject,
+  SessionCaptureRecord,
+  SessionCaptureCleanupGate,
 } from "@lingban/contracts";
 import { nowIso, toErrorMessage } from "@lingban/shared";
 
@@ -135,6 +144,104 @@ export class ApiConnector {
     return this.syncRunStatus(runId, "FAILED", error, this.#now());
   }
 
+  async listClaimableSessionCaptures(runId: string): Promise<SessionCaptureRecord[]> {
+    const result = await this.#requestJson(
+      `/internal/runs/${encodeURIComponent(runId)}/session-captures/claimable`,
+      { method: "GET" }
+    ) as { items?: SessionCaptureRecord[] } | null;
+    return result?.items ?? [];
+  }
+
+  async getSessionCaptureCleanupGate(runId: string): Promise<SessionCaptureCleanupGate> {
+    return await this.#requestJson(
+      `/internal/runs/${encodeURIComponent(runId)}/session-captures/cleanup-gate`,
+      { method: "GET" }
+    ) as SessionCaptureCleanupGate;
+  }
+
+  async acquireSessionCaptureLease(
+    runId: string,
+    captureId: string,
+    workerId: string,
+    leaseSeconds = 120
+  ): Promise<SessionCaptureLease> {
+    return await this.#post(
+      `/internal/runs/${encodeURIComponent(runId)}/session-captures/${encodeURIComponent(captureId)}/lease`,
+      { workerId, leaseSeconds }
+    ) as SessionCaptureLease;
+  }
+
+  async submitSessionCaptureBarrier(
+    lease: SessionCaptureLease,
+    boundary: SessionCaptureBoundary
+  ): Promise<SessionCaptureRecord> {
+    return await this.#post(
+      `/internal/runs/${encodeURIComponent(lease.runId)}/session-captures/${encodeURIComponent(lease.captureId)}/barrier`,
+      { workerId: lease.workerId, leaseGeneration: lease.leaseGeneration, boundary }
+    ) as SessionCaptureRecord;
+  }
+
+  async getSessionCaptureEvidence(lease: SessionCaptureLease): Promise<{
+    capture: SessionCaptureRecord;
+    thread: AgentThreadRecord | null;
+    events: AgentRuntimeEventRecord[];
+    run: RunSnapshot;
+  }> {
+    const query = new URLSearchParams({
+      workerId: lease.workerId,
+      leaseGeneration: String(lease.leaseGeneration),
+    });
+    return await this.#requestJson(
+      `/internal/runs/${encodeURIComponent(lease.runId)}/session-captures/${encodeURIComponent(lease.captureId)}/evidence?${query}`,
+      { method: "GET" }
+    ) as {
+      capture: SessionCaptureRecord;
+      thread: AgentThreadRecord | null;
+      events: AgentRuntimeEventRecord[];
+      run: RunSnapshot;
+    };
+  }
+
+  async uploadSessionCaptureObject(
+    lease: SessionCaptureLease,
+    object: Pick<SessionCaptureObject, "objectType" | "sha256" | "contentType">,
+    content: Uint8Array
+  ): Promise<{ capture: SessionCaptureRecord; object: SessionCaptureObject }> {
+    const query = new URLSearchParams({
+      workerId: lease.workerId,
+      leaseGeneration: String(lease.leaseGeneration),
+      sha256: object.sha256,
+      contentType: object.contentType,
+    });
+    const pathname =
+      `/internal/runs/${encodeURIComponent(lease.runId)}/session-captures/` +
+      `${encodeURIComponent(lease.captureId)}/objects/${encodeURIComponent(object.objectType)}?${query}`;
+    const response = await this.#requestBinary(pathname, content);
+    return await response.json() as { capture: SessionCaptureRecord; object: SessionCaptureObject };
+  }
+
+  async completeSessionCapture(
+    runId: string,
+    captureId: string,
+    input: CompleteSessionCaptureInput
+  ): Promise<SessionCaptureRecord> {
+    return await this.#post(
+      `/internal/runs/${encodeURIComponent(runId)}/session-captures/${encodeURIComponent(captureId)}/complete`,
+      input
+    ) as SessionCaptureRecord;
+  }
+
+  async failSessionCapture(
+    runId: string,
+    captureId: string,
+    input: FailSessionCaptureInput
+  ): Promise<SessionCaptureRecord> {
+    return await this.#post(
+      `/internal/runs/${encodeURIComponent(runId)}/session-captures/${encodeURIComponent(captureId)}/fail`,
+      input
+    ) as SessionCaptureRecord;
+  }
+
   async #post(pathname: string, body: unknown) {
     const traceId = `trace_${randomUUID()}`;
     const idempotencyKey = `cbk_${randomUUID()}`;
@@ -233,6 +340,34 @@ export class ApiConnector {
       traceId,
       idempotencyKey,
     });
+  }
+
+  async #requestBinary(pathname: string, content: Uint8Array) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort(new Error(`request timeout after ${this.#requestTimeoutMs}ms`));
+    }, Math.max(this.#requestTimeoutMs, 60_000));
+    try {
+      const response = await fetch(`${this.#baseUrl}${pathname}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/octet-stream",
+          ...(this.#authToken ? { "x-lingban-internal-token": this.#authToken } : {}),
+          "x-lingban-trace-id": `trace_${randomUUID()}`,
+          "x-lingban-idempotency-key": `cbk_${randomUUID()}`,
+        },
+        body: Buffer.from(content),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const error = new Error(`Capture object upload failed (${response.status}): ${await response.text()}`) as Error & { status?: number };
+        error.status = response.status;
+        throw error;
+      }
+      return response;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   #shouldRetry(error: unknown, attempt: number) {

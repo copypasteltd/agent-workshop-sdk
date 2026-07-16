@@ -61,6 +61,7 @@ function buildBridgeRegistration(input: {
       "ping",
       "syncFiles",
       "flushArtifacts",
+      "captureBarrier",
     ],
   };
 }
@@ -283,12 +284,14 @@ async function main() {
     emitEvent: handleEvent,
     mcpStdioAllowedPathPrefixes: cliConfig.mcpStdioAllowedPathPrefixes,
     codex: {
+      protocol: cliConfig.codexRuntimeProtocol,
       command: cliConfig.codexBin,
       args: cliConfig.codexArgs,
       cwd: context.targetPath,
       restartMaxAttempts: cliConfig.codexRestartMaxAttempts,
       restartBackoffMs: cliConfig.codexRestartBackoffMs,
       restartResetWindowMs: cliConfig.codexRestartResetWindowMs,
+      appServerRequestTimeoutMs: cliConfig.codexAppServerRequestTimeoutMs,
     },
   });
 
