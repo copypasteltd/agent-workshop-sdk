@@ -23,6 +23,7 @@ function createContext(root, runId, workspaceId) {
     entrySurface: null,
     workspaceContextKey: null,
     serviceId: null,
+    approvalMode: "manual",
     targetPath: root,
     initialPrompt: "collect required information",
     requestedInitialMessage: null,
@@ -53,6 +54,7 @@ reader.on("line", (line) => {
     send({ method: "turn/completed", params: { threadId: "thr_test", turn: { id: turnId, status: "completed" } } });
   }
 });
+
 `, "utf8");
 
   const events = [];
@@ -175,6 +177,7 @@ reader.on("line", (line) => {
     send({ method: "turn/completed", params: { threadId: "thr_deferred", turn: { id: "turn_deferred", status: "completed" } } });
   }
 });
+
 `, "utf8");
 
   const events = [];
@@ -201,6 +204,105 @@ reader.on("line", (line) => {
     const response = events.find((event) => event.type === "conversation.message" && event.message.role === "agent");
     assert.match(response.message.text, /collect required information/);
     assert.match(response.message.text, /record this workflow/);
+  } finally {
+    await session.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("AppServerSession automatically accepts approval requests in auto_all mode", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "lingban-app-server-auto-approval-"));
+  const fixturePath = path.join(root, "fake-app-server.mjs");
+  await writeFile(fixturePath, `
+import readline from "node:readline";
+const reader = readline.createInterface({ input: process.stdin });
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+reader.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") send({ id: message.id, result: { protocolVersion: "test-auto-approval" } });
+  if (message.method === "thread/start") send({ id: message.id, result: { thread: { id: "thr_auto" } } });
+  if (message.method === "turn/start") {
+    send({ id: message.id, result: { turn: { id: "turn_auto" } } });
+    send({ method: "turn/started", params: { threadId: "thr_auto", turn: { id: "turn_auto", status: "inProgress" } } });
+    send({ id: 77, method: "item/tool/requestApproval", params: { threadId: "thr_auto", turnId: "turn_auto", itemId: "tool_1", reason: "Allow workspace write" } });
+  }
+  if (message.id === 77 && message.result?.decision === "accept") {
+    send({ method: "item/completed", params: { threadId: "thr_auto", turnId: "turn_auto", item: { id: "item_auto", type: "agentMessage", text: "approval accepted" } } });
+    send({ method: "turn/completed", params: { threadId: "thr_auto", turn: { id: "turn_auto", status: "completed" } } });
+  }
+});
+`, "utf8");
+
+  const events = [];
+  const session = new AppServerSession({
+    context: {
+      ...createContext(root, "run_auto_approval", "wsp_auto_approval"),
+      approvalMode: "auto_all",
+    },
+    launch: { command: process.execPath, args: [fixturePath], cwd: root },
+    emit: (event) => events.push(event),
+    requestTimeoutMs: 10_000,
+    includeDefaultAppServerArgs: false,
+  });
+
+  try {
+    await session.start();
+    await waitFor(() => events.some(
+      (event) => event.type === "conversation.message" && event.message.text === "approval accepted"
+    ));
+    const approval = events.find((event) => event.type === "approval.requested")?.approval;
+    assert.equal(approval?.state, "approved");
+    assert.equal(approval?.decisionMode, "auto_all");
+    assert.equal(session.getDiagnostics().approvalMode, "auto_all");
+    assert.equal(session.getDiagnostics().pendingApprovalCount, 0);
+  } finally {
+    await session.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("AppServerSession drains pending requests when auto_all is enabled dynamically", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "lingban-app-server-dynamic-approval-"));
+  const fixturePath = path.join(root, "fake-app-server.mjs");
+  await writeFile(fixturePath, `
+import readline from "node:readline";
+const reader = readline.createInterface({ input: process.stdin });
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+reader.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") send({ id: message.id, result: { protocolVersion: "test-dynamic-approval" } });
+  if (message.method === "thread/start") send({ id: message.id, result: { thread: { id: "thr_dynamic" } } });
+  if (message.method === "turn/start") {
+    send({ id: message.id, result: { turn: { id: "turn_dynamic" } } });
+    send({ method: "turn/started", params: { threadId: "thr_dynamic", turn: { id: "turn_dynamic", status: "inProgress" } } });
+    send({ id: 88, method: "item/tool/requestApproval", params: { itemId: "tool_dynamic", reason: "Allow command" } });
+  }
+  if (message.id === 88 && message.result?.decision === "accept") {
+    send({ method: "item/completed", params: { threadId: "thr_dynamic", turnId: "turn_dynamic", item: { id: "item_dynamic", type: "agentMessage", text: "dynamic approval accepted" } } });
+  }
+});
+`, "utf8");
+
+  const events = [];
+  const session = new AppServerSession({
+    context: createContext(root, "run_dynamic_approval", "wsp_dynamic_approval"),
+    launch: { command: process.execPath, args: [fixturePath], cwd: root },
+    emit: (event) => events.push(event),
+    requestTimeoutMs: 10_000,
+    includeDefaultAppServerArgs: false,
+  });
+
+  try {
+    await session.start();
+    await waitFor(() => session.getDiagnostics().pendingApprovalCount === 1);
+    session.setApprovalMode("auto_all");
+    await waitFor(() => events.some(
+      (event) => event.type === "conversation.message" && event.message.text === "dynamic approval accepted"
+    ));
+    const approvals = events.filter((event) => event.type === "approval.requested");
+    assert.equal(approvals.at(-1)?.approval.state, "approved");
+    assert.equal(session.getDiagnostics().approvalMode, "auto_all");
+    assert.equal(session.getDiagnostics().pendingApprovalCount, 0);
   } finally {
     await session.stop();
     await rm(root, { recursive: true, force: true });

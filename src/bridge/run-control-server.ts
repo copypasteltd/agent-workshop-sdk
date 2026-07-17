@@ -62,6 +62,9 @@ export class RunControlServer {
         case "approve":
           await this.#options.session.approve(parsed.payload);
           return { ok: true, command: parsed.type };
+        case "setApprovalMode":
+          await this.#options.session.setApprovalMode(parsed.payload.approvalMode);
+          return { ok: true, command: parsed.type };
         case "cancel":
           await this.#options.session.cancel(parsed.reason);
           return { ok: true, command: parsed.type };

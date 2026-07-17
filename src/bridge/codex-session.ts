@@ -11,6 +11,7 @@ import {
   type BridgeSessionContext,
   type MessageKind,
   type MessageRole,
+  type RunApprovalMode,
   type RunStatus,
   type SendRunMessageInput,
 } from "@lingban/contracts";
@@ -136,6 +137,7 @@ export class CodexSession {
   #lastStdoutAt: string | null = null;
   #lastMessageAt: string | null = null;
   #lastApprovalAt: string | null = null;
+  #approvalMode: RunApprovalMode;
   #lastCancelAt: string | null = null;
   #lastHeartbeatAt: string | null = null;
   #lastUnexpectedExitAt: string | null = null;
@@ -170,6 +172,7 @@ export class CodexSession {
       emit: options.emit,
       now: this.#options.now,
     });
+    this.#approvalMode = options.context.approvalMode;
     this.#deferredInitialPromptPending = options.context.deferInitialTurn;
   }
 
@@ -243,6 +246,10 @@ export class CodexSession {
     }
 
     throw new Error("Codex session is not running");
+  }
+
+  setApprovalMode(approvalMode: RunApprovalMode) {
+    this.#approvalMode = approvalMode;
   }
 
   cancel(reason?: string) {
@@ -325,6 +332,7 @@ export class CodexSession {
       eventHighWatermark: 0,
       pendingRequestCount: 0,
       pendingApprovalCount: 0,
+      approvalMode: this.#approvalMode,
       startedAt: this.#startedAt,
       lastLaunchAt: this.#lastLaunchAt,
       lastStdoutAt: this.#lastStdoutAt,

@@ -1,4 +1,4 @@
-import type { RunControlCommand } from "@lingban/contracts";
+import type { RunApprovalMode, RunControlCommand } from "@lingban/contracts";
 
 export type CounterMap = Record<string, number>;
 
@@ -25,6 +25,7 @@ export type CodexSessionDiagnostics = {
   eventHighWatermark: number;
   pendingRequestCount: number;
   pendingApprovalCount: number;
+  approvalMode: RunApprovalMode;
   startedAt: string | null;
   lastLaunchAt: string | null;
   lastStdoutAt: string | null;
@@ -176,6 +177,7 @@ export type BridgeRuntimeDiagnostics = {
 const runControlCommandTypes = [
   "sendMessage",
   "approve",
+  "setApprovalMode",
   "cancel",
   "ping",
   "syncFiles",
@@ -187,6 +189,7 @@ export function createCommandCounterMap(): Record<RunControlCommand["type"], num
   return {
     sendMessage: 0,
     approve: 0,
+    setApprovalMode: 0,
     cancel: 0,
     ping: 0,
     syncFiles: 0,

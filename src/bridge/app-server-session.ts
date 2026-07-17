@@ -10,6 +10,8 @@ import {
   type ApproveRunInput,
   type BridgeEvent,
   type BridgeSessionContext,
+  type RunApproval,
+  type RunApprovalMode,
   type SendRunMessageInput,
 } from "@lingban/contracts";
 import type { CodexSessionDiagnostics } from "../observability.js";
@@ -49,6 +51,11 @@ type UserInputQuestion = {
 type PendingUserInputRequest = {
   requestId: JsonRpcId;
   questions: UserInputQuestion[];
+};
+
+type PendingApprovalRequest = {
+  requestId: JsonRpcId;
+  approval: RunApproval;
 };
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -165,7 +172,9 @@ export class AppServerSession implements AgentSession {
   #stderrBuffer = "";
   #nextRequestId = 1;
   #pendingRequests = new Map<JsonRpcId, PendingRequest>();
-  #approvalRequests = new Map<string, JsonRpcId>();
+  #approvalRequests = new Map<string, PendingApprovalRequest>();
+  #decidedApprovals = new Map<string, boolean>();
+  #approvalMode: RunApprovalMode;
   #userInputRequests = new Map<string, PendingUserInputRequest>();
   #sequence = 0;
   #threadId: string | null = null;
@@ -195,6 +204,8 @@ export class AppServerSession implements AgentSession {
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
       includeDefaultAppServerArgs: options.includeDefaultAppServerArgs ?? true,
     };
+    this.#sequence = Date.now() * 1_000 + Math.floor(Math.random() * 1_000);
+    this.#approvalMode = options.context.approvalMode;
     this.#deferredInitialPromptPending = options.context.deferInitialTurn;
   }
 
@@ -286,12 +297,27 @@ export class AppServerSession implements AgentSession {
   async approve(input: ApproveRunInput) {
     const approvalId = input.approvalId ?? this.#approvalRequests.keys().next().value;
     if (!approvalId) throw new Error("No pending Codex App Server approval request");
-    const requestId = this.#approvalRequests.get(approvalId);
-    if (requestId == null) throw new Error(`Unknown Codex App Server approval: ${approvalId}`);
-    this.#approvalRequests.delete(approvalId);
-    this.#lastApprovalAt = this.#options.now();
-    this.#respond(requestId, { decision: input.approved ? "accept" : "decline" });
-    this.#setConnectionState(this.#turnState === "in_progress" ? "turn_running" : "ready");
+    const pending = this.#approvalRequests.get(approvalId);
+    if (!pending) {
+      if (this.#decidedApprovals.get(approvalId) === input.approved) return;
+      throw new Error(`Unknown Codex App Server approval: ${approvalId}`);
+    }
+    this.#decideApproval(approvalId, pending, input.approved, false, input.note ?? null);
+  }
+
+  setApprovalMode(approvalMode: RunApprovalMode) {
+    this.#approvalMode = approvalMode;
+    if (approvalMode !== "auto_all") return;
+
+    for (const [approvalId, pending] of [...this.#approvalRequests.entries()]) {
+      this.#decideApproval(
+        approvalId,
+        pending,
+        true,
+        true,
+        "Automatically approved by the instance approval policy."
+      );
+    }
   }
 
   async cancel(reason?: string) {
@@ -365,6 +391,7 @@ export class AppServerSession implements AgentSession {
       eventHighWatermark: this.#sequence,
       pendingRequestCount: this.#pendingRequests.size,
       pendingApprovalCount: this.#approvalRequests.size,
+      approvalMode: this.#approvalMode,
       startedAt: this.#startedAt,
       lastLaunchAt: this.#lastLaunchAt,
       lastStdoutAt: this.#lastStdoutAt,
@@ -541,12 +568,11 @@ export class AppServerSession implements AgentSession {
   #emitApprovalRequest(message: JsonRecord) {
     if (message.id == null) return;
     const approvalId = `apr_${randomUUID()}`;
-    this.#approvalRequests.set(approvalId, message.id as JsonRpcId);
     const params = isRecord(message.params) ? message.params : {};
     const prompt = readString(params.reason) ?? readString(params.prompt) ?? `Codex requests approval for ${readString(message.method) ?? "an action"}.`;
-    this.#setConnectionState("waiting_approval");
-    this.#options.emit(bridgeEventSchema.parse({
-      type: "approval.requested",
+    const requestedAt = this.#options.now();
+    const pending = {
+      requestId: message.id as JsonRpcId,
       approval: runApprovalSchema.parse({
         approvalId,
         runId: this.#options.context.runId,
@@ -554,11 +580,60 @@ export class AppServerSession implements AgentSession {
         relatedResourceRef: readString(params.itemId),
         prompt,
         state: "pending",
-        requestedAt: this.#options.now(),
+        requestedAt,
         decidedAt: null,
+        decisionMode: null,
+        decidedByUserId: null,
         note: null,
       }),
+    } satisfies PendingApprovalRequest;
+
+    if (this.#approvalMode === "auto_all") {
+      this.#decideApproval(
+        approvalId,
+        pending,
+        true,
+        true,
+        "Automatically approved by the instance approval policy."
+      );
+      return;
+    }
+
+    this.#approvalRequests.set(approvalId, pending);
+    this.#setConnectionState("waiting_approval");
+    this.#options.emit(bridgeEventSchema.parse({
+      type: "approval.requested",
+      approval: pending.approval,
     }));
+  }
+
+  #decideApproval(
+    approvalId: string,
+    pending: PendingApprovalRequest,
+    approved: boolean,
+    emitDecision: boolean,
+    note: string | null
+  ) {
+    this.#approvalRequests.delete(approvalId);
+    this.#decidedApprovals.set(approvalId, approved);
+    this.#lastApprovalAt = this.#options.now();
+    this.#respond(pending.requestId, { decision: approved ? "accept" : "decline" });
+
+    if (emitDecision) {
+      this.#options.emit(bridgeEventSchema.parse({
+        type: "approval.requested",
+        approval: runApprovalSchema.parse({
+          ...pending.approval,
+          state: approved ? "approved" : "rejected",
+          decidedAt: this.#lastApprovalAt,
+          decisionMode: "auto_all",
+          decidedByUserId: null,
+          note,
+        }),
+      }));
+    }
+
+    this.#setConnectionState(this.#turnState === "in_progress" ? "turn_running" : "ready");
   }
 
   #emitUserInputRequest(message: JsonRecord) {

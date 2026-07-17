@@ -57,6 +57,7 @@ function buildBridgeRegistration(input: {
     supportedCommands: [
       "sendMessage",
       "approve",
+      "setApprovalMode",
       "cancel",
       "ping",
       "syncFiles",
