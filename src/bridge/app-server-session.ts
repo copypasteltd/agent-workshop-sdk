@@ -184,6 +184,7 @@ export class AppServerSession implements AgentSession {
   #lastExitCode: number | null = null;
   #lastExitSignal: number | null = null;
   #stopping = false;
+  #deferredInitialPromptPending = false;
 
   constructor(options: AppServerSessionOptions) {
     this.#options = {
@@ -194,6 +195,7 @@ export class AppServerSession implements AgentSession {
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
       includeDefaultAppServerArgs: options.includeDefaultAppServerArgs ?? true,
     };
+    this.#deferredInitialPromptPending = options.context.deferInitialTurn;
   }
 
   setRuntimeEnv(env: Record<string, string>) {
@@ -250,7 +252,7 @@ export class AppServerSession implements AgentSession {
       this.#options.context.initialPrompt,
       this.#options.context.requestedInitialMessage,
     ].filter((value): value is string => Boolean(value)).join("\n\n");
-    if (initialText) await this.#startTurn(initialText);
+    if (initialText && !this.#options.context.deferInitialTurn) await this.#startTurn(initialText);
   }
 
   async sendMessage(input: SendRunMessageInput) {
@@ -273,7 +275,12 @@ export class AppServerSession implements AgentSession {
       });
       return;
     }
-    await this.#startTurn(formatUserMessage(input));
+    const userText = formatUserMessage(input);
+    const turnText = this.#deferredInitialPromptPending
+      ? [this.#options.context.initialPrompt, userText].filter(Boolean).join("\n\n")
+      : userText;
+    this.#deferredInitialPromptPending = false;
+    await this.#startTurn(turnText);
   }
 
   async approve(input: ApproveRunInput) {

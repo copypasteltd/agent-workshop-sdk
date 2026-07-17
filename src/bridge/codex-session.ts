@@ -153,6 +153,7 @@ export class CodexSession {
   #restartTimer: NodeJS.Timeout | null = null;
   #replayHistory: string[] = [];
   #replayHistoryBytes = 0;
+  #deferredInitialPromptPending = false;
 
   constructor(options: CodexSessionOptions) {
     this.#options = {
@@ -169,6 +170,7 @@ export class CodexSession {
       emit: options.emit,
       now: this.#options.now,
     });
+    this.#deferredInitialPromptPending = options.context.deferInitialTurn;
   }
 
   start() {
@@ -206,7 +208,11 @@ export class CodexSession {
   }
 
   sendMessage(input: SendRunMessageInput) {
-    const payload = formatUserMessage(input);
+    const userPayload = formatUserMessage(input);
+    const payload = this.#deferredInitialPromptPending
+      ? `${this.#options.context.initialPrompt}\n\n${userPayload}`
+      : userPayload;
+    this.#deferredInitialPromptPending = false;
     this.#recordReplayInput(payload);
     this.#lastMessageAt = this.#options.now();
 
@@ -386,6 +392,9 @@ export class CodexSession {
   }
 
   #writeInitialInputs() {
+    if (this.#options.context.deferInitialTurn) {
+      return;
+    }
     this.#writeToPty(`${this.#options.context.initialPrompt}\n`);
     if (this.#options.context.requestedInitialMessage) {
       this.#writeToPty(`${this.#options.context.requestedInitialMessage}\n`);

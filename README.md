@@ -110,7 +110,8 @@ Production session control uses `codex app-server --listen stdio://` through `sr
 
 | Capability | Implementation |
 |---|---|
-| Startup | `initialize` → `thread/start` → `turn/start` |
+| Consumer startup | `initialize` → `thread/start` → initial `turn/start` |
+| Blank Source startup | `initialize` → `thread/start` → wait for Creator message |
 | Continued conversation | Reuses one Thread across multiple Turns |
 | Active-turn input | `turn/steer` with `expectedTurnId` |
 | Structured input | `item/tool/requestUserInput` response mapping |
@@ -119,15 +120,17 @@ Production session control uses `codex app-server --listen stdio://` through `sr
 | Ordering | Thread and Turn IDs are extracted before raw-event emission |
 | Compatibility | `CODEX_RUNTIME_PROTOCOL=legacy-pty` remains available for controlled rollback |
 
+For `deferInitialTurn=true`, Bridge creates the Codex Thread and stays idle. The first Creator message is combined with the recording policy and starts the first Turn. The same rule is implemented by the App Server and legacy PTY adapters.
+
 ## 当前状态 / Current Status
 
 截至 2026-07-17，Bridge 已实现 Codex App Server 主链、PTY 兼容回滚、异常恢复、输入回放、文件与 Artifact 回流、三类 MCP 物化、远程代理、Secret 注入、内部 API 接线和完整诊断面。
 
 As of 2026-07-17, the bridge uses Codex App Server as the primary structured protocol and retains a controlled PTY rollback adapter. Recovery, MCP materialization, secret injection, API integration, and runtime diagnostics remain available.
 
-最新原生测试结果：25/25 通过。
+最新原生测试结果：26/26 通过。
 
-Latest native test result: 25/25 passed.
+Latest native test result: 26/26 passed.
 
 生产深化项包括长时会话压力测试、Codex CLI 多版本兼容矩阵、第三方 MCP 故障注入、Run-scoped 密钥轮换和断网恢复演练。
 

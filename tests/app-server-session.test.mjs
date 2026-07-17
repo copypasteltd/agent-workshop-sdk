@@ -155,3 +155,54 @@ reader.on("line", (line) => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("AppServerSession defers a blank Source Run turn until the first Creator message", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "lingban-app-server-deferred-"));
+  const fixturePath = path.join(root, "fake-app-server.mjs");
+  await writeFile(fixturePath, `
+import readline from "node:readline";
+const reader = readline.createInterface({ input: process.stdin });
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+reader.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") send({ id: message.id, result: { protocolVersion: "test-deferred" } });
+  if (message.method === "thread/start") send({ id: message.id, result: { thread: { id: "thr_deferred" } } });
+  if (message.method === "turn/start") {
+    const text = message.params.input[0].text;
+    send({ id: message.id, result: { turn: { id: "turn_deferred" } } });
+    send({ method: "turn/started", params: { threadId: "thr_deferred", turn: { id: "turn_deferred", status: "inProgress" } } });
+    send({ method: "item/completed", params: { threadId: "thr_deferred", turnId: "turn_deferred", item: { id: "item_deferred", type: "agentMessage", text } } });
+    send({ method: "turn/completed", params: { threadId: "thr_deferred", turn: { id: "turn_deferred", status: "completed" } } });
+  }
+});
+`, "utf8");
+
+  const events = [];
+  const context = {
+    ...createContext(root, "run_source_deferred", "wsp_source_deferred"),
+    deferInitialTurn: true,
+  };
+  const session = new AppServerSession({
+    context,
+    launch: { command: process.execPath, args: [fixturePath], cwd: root },
+    emit: (event) => events.push(event),
+    requestTimeoutMs: 10_000,
+    includeDefaultAppServerArgs: false,
+  });
+
+  try {
+    await session.start();
+    await waitFor(() => events.some((event) => event.type === "run.status.changed" && event.status === "RUNNING"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(events.some((event) => event.type === "agent.runtime.event" && event.eventType === "turn/started"), false);
+
+    await session.sendMessage({ text: "record this workflow", attachments: [], slotValues: [] });
+    await waitFor(() => events.some((event) => event.type === "conversation.message" && event.message.role === "agent"));
+    const response = events.find((event) => event.type === "conversation.message" && event.message.role === "agent");
+    assert.match(response.message.text, /collect required information/);
+    assert.match(response.message.text, /record this workflow/);
+  } finally {
+    await session.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
