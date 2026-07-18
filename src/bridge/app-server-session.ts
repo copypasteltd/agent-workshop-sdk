@@ -418,6 +418,12 @@ export class AppServerSession implements AgentSession {
     const result = await this.#request("turn/start", {
       threadId: this.#threadId,
       input: [{ type: "text", text }],
+      cwd: this.#options.launch.cwd,
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [this.#options.launch.cwd],
+        networkAccess: true,
+      },
     });
     if (isRecord(result)) {
       this.#turnId = extractTurnId({ result }) ?? this.#turnId;

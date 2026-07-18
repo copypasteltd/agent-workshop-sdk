@@ -44,8 +44,19 @@ const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 reader.on("line", (line) => {
   const message = JSON.parse(line);
   if (message.method === "initialize") send({ id: message.id, result: { protocolVersion: "test-v1" } });
-  if (message.method === "thread/start") send({ id: message.id, result: { thread: { id: "thr_test" } } });
+  if (message.method === "thread/start") {
+    if (message.params?.sandbox !== "workspace-write") {
+      send({ id: message.id, error: { code: -32602, message: "workspace-write sandbox is required" } });
+      return;
+    }
+    send({ id: message.id, result: { thread: { id: "thr_test" } } });
+  }
   if (message.method === "turn/start") {
+    const policy = message.params?.sandboxPolicy;
+    if (policy?.type !== "workspaceWrite" || policy?.networkAccess !== true || !policy?.writableRoots?.includes(${JSON.stringify(root)})) {
+      send({ id: message.id, error: { code: -32602, message: "network-enabled workspace policy is required" } });
+      return;
+    }
     turn += 1;
     const turnId = "turn_" + turn;
     send({ id: message.id, result: { turn: { id: turnId } } });
