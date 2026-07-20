@@ -292,6 +292,7 @@ reader.on("line", (line) => {
     send({ method: "item/completed", params: { threadId: "thr_dynamic", turnId: "turn_dynamic", item: { id: "item_dynamic", type: "agentMessage", text: "dynamic approval accepted" } } });
   }
 });
+
 `, "utf8");
 
   const events = [];
@@ -314,6 +315,111 @@ reader.on("line", (line) => {
     assert.equal(approvals.at(-1)?.approval.state, "approved");
     assert.equal(session.getDiagnostics().approvalMode, "auto_all");
     assert.equal(session.getDiagnostics().pendingApprovalCount, 0);
+  } finally {
+    await session.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("AppServerSession injects MCP config and emits redacted native MCP observations", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "lingban-app-server-mcp-"));
+  const fixturePath = path.join(root, "fake-app-server.mjs");
+  await writeFile(fixturePath, `
+import readline from "node:readline";
+const reader = readline.createInterface({ input: process.stdin });
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+reader.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") send({ id: message.id, result: { protocolVersion: "test-mcp" } });
+  if (message.method === "thread/start") {
+    const server = message.params?.config?.mcp_servers?.mbd_browser_playwright;
+    if (server?.command !== "/usr/local/bin/lingban-playwright-mcp" || server?.default_tools_approval_mode !== "prompt") {
+      send({ id: message.id, error: { code: -32602, message: "native MCP config is required" } });
+      return;
+    }
+    send({ id: message.id, result: { thread: { id: "thr_mcp" } } });
+  }
+  if (message.method === "turn/start") {
+    send({ id: message.id, result: { turn: { id: "turn_mcp" } } });
+    send({ method: "turn/started", params: { threadId: "thr_mcp", turn: { id: "turn_mcp", status: "inProgress" } } });
+    send({ id: 90, method: "mcpServer/elicitation/request", params: {
+      threadId: "thr_mcp",
+      turnId: "turn_mcp",
+      serverName: "mbd_browser_playwright",
+      mode: "form",
+      message: "Allow the Playwright MCP server to navigate?",
+      requestedSchema: { type: "object", properties: {} },
+      _meta: { codex_approval_kind: "mcp_tool_call", tool_description: "Navigate to a URL" }
+    } });
+  }
+  if (message.id === 90 && message.result?.action === "accept") {
+    send({ method: "item/completed", params: { threadId: "thr_mcp", turnId: "turn_mcp", item: {
+      id: "mcp_call_1",
+      type: "mcpToolCall",
+      server: "mbd_browser_playwright",
+      tool: "browser_navigate",
+      arguments: { url: "https://example.test", apiKey: "sk-sensitive-value" },
+      status: "completed",
+      durationMs: 125,
+      result: { content: [{ type: "text", text: "Bearer private-token" }], structuredContent: { token: "private-token" } },
+      error: null
+    } } });
+    send({ method: "item/completed", params: { threadId: "thr_mcp", turnId: "turn_mcp", item: { id: "item_mcp_done", type: "agentMessage", text: "MCP completed" } } });
+    send({ method: "turn/completed", params: { threadId: "thr_mcp", turn: { id: "turn_mcp", status: "completed" } } });
+  }
+});
+`, "utf8");
+
+  const context = {
+    ...createContext(root, "run_app_server_mcp", "wsp_app_server_mcp"),
+    approvalMode: "auto_all",
+    mcpBindings: [{
+      bindingId: "mbd_browser_playwright",
+      mcpId: "mcp.browser.playwright",
+      displayName: "Playwright Browser",
+      source: "first-party",
+      transport: "stdio",
+      ref: "/usr/local/bin/lingban-playwright-mcp",
+      riskLevel: "high",
+      credentialId: null,
+      authMode: null,
+      authRef: null,
+      networkPolicyRef: null,
+      approvalRequired: true,
+    }],
+  };
+  const observations = [];
+  const session = new AppServerSession({
+    context,
+    launch: { command: process.execPath, args: [fixturePath], cwd: root },
+    emit: () => undefined,
+    observeMcpCall: (observation) => observations.push(observation),
+    requestTimeoutMs: 10_000,
+    includeDefaultAppServerArgs: false,
+  });
+  session.setThreadConfig({
+    mcp_servers: {
+      mbd_browser_playwright: {
+        command: "/usr/local/bin/lingban-playwright-mcp",
+        enabled: true,
+        required: true,
+        default_tools_approval_mode: "prompt",
+      },
+    },
+  });
+
+  try {
+    await session.start();
+    await waitFor(() => observations.length === 1);
+    assert.equal(observations[0].mcpId, "mcp.browser.playwright");
+    assert.equal(observations[0].bindingId, "mbd_browser_playwright");
+    assert.equal(observations[0].toolName, "browser_navigate");
+    assert.equal(observations[0].status, "success");
+    assert.equal(observations[0].durationMs, 125);
+    assert.match(observations[0].inputSummary, /\[REDACTED\]/);
+    assert.doesNotMatch(observations[0].inputSummary, /sk-sensitive-value/);
+    assert.match(observations[0].outputSummary, /\[REDACTED\]/);
+    assert.doesNotMatch(observations[0].outputSummary, /private-token/);
   } finally {
     await session.stop();
     await rm(root, { recursive: true, force: true });

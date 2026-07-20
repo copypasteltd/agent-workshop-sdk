@@ -135,3 +135,9 @@ Latest native test result: 26/26 passed.
 生产深化项包括长时会话压力测试、Codex CLI 多版本兼容矩阵、第三方 MCP 故障注入、Run-scoped 密钥轮换和断网恢复演练。
 
 Production hardening covers long-running session load tests, a Codex CLI version matrix, third-party MCP fault injection, run-scoped secret rotation, and network interruption recovery drills.
+
+## 2026-07-20 Verification / 2026-07-20 验收
+
+Bridge 原生测试 `29/29` 通过。Bridge 将已解析 MCP 写入 Codex 原生 `mcp_servers` Thread 配置，处理 MCP 启动状态、工具调用、`elicitation` 审批和 `auto_all` 自动审批，并将调用结果按 Call ID 去重后写入平台审计。真实 Playwright MCP 已在 Runner 中报告 `ready` 并完成工具调用。
+
+Native bridge tests pass `29/29`. Resolved MCP servers are injected through the Codex App Server thread configuration, with startup status, tool calls, elicitation approvals, automatic approval, deduplicated audit events, and sensitive-value redaction.

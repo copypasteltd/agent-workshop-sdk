@@ -29,6 +29,7 @@ export type ContainerBridgeOptions = {
     restartBackoffMs?: number;
     restartResetWindowMs?: number;
     appServerRequestTimeoutMs?: number;
+    appServerIncludeDefaultArgs?: boolean;
   };
 };
 
@@ -105,6 +106,8 @@ export async function buildContainerBridge(options: ContainerBridgeOptions = {})
         emit: emitEvent,
         launch,
         requestTimeoutMs: options.codex?.appServerRequestTimeoutMs,
+        includeDefaultAppServerArgs: options.codex?.appServerIncludeDefaultArgs,
+        observeMcpCall: (observation) => mcpCallAuditWatcher.ingest(observation),
       })
     : new CodexSession({
         context,
@@ -162,6 +165,7 @@ export async function buildContainerBridge(options: ContainerBridgeOptions = {})
         LINGBAN_MCP_AUDIT_LOG_PATH: mcp.auditLogPath,
         LINGBAN_MCP_AUDIT_FORMAT: "jsonl-v1",
       });
+      codexSession.setThreadConfig?.(mcp.codexThreadConfig);
       await fileWatcher.start();
       await mcpCallAuditWatcher.start();
       await codexSession.start();

@@ -10,6 +10,7 @@ import {
   type ApproveRunInput,
   type BridgeEvent,
   type BridgeSessionContext,
+  type McpCallObservation,
   type RunApproval,
   type RunApprovalMode,
   type SendRunMessageInput,
@@ -32,6 +33,7 @@ type AppServerSessionOptions = {
   now?: () => string;
   requestTimeoutMs?: number;
   includeDefaultAppServerArgs?: boolean;
+  observeMcpCall?: (observation: McpCallObservation) => void;
 };
 
 type PendingRequest = {
@@ -51,11 +53,13 @@ type UserInputQuestion = {
 type PendingUserInputRequest = {
   requestId: JsonRpcId;
   questions: UserInputQuestion[];
+  responseKind: "codex-user-input" | "mcp-elicitation-form" | "mcp-elicitation-url";
 };
 
 type PendingApprovalRequest = {
   requestId: JsonRpcId;
   approval: RunApproval;
+  responseKind: "decision" | "mcp-elicitation";
 };
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -116,12 +120,67 @@ function formatUserInputQuestions(questions: UserInputQuestion[]) {
 function buildUserInputAnswers(request: PendingUserInputRequest, input: SendRunMessageInput) {
   const explicit = new Map(input.slotValues.map((value) => [value.slotKey, value.valueText]));
   const lines = input.text.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+  const answers = Object.fromEntries(request.questions.map((question, index) => {
+    const explicitAnswer = explicit.get(question.id);
+    const fallback = request.questions.length === 1
+      ? input.text
+      : lines[index] ?? (index === 0 ? input.text : "");
+    return [question.id, explicitAnswer ?? fallback];
+  }));
+
+  if (request.responseKind === "mcp-elicitation-url") {
+    return { action: "accept" };
+  }
+  if (request.responseKind === "mcp-elicitation-form") {
+    return { action: "accept", content: answers };
+  }
   return {
-    answers: Object.fromEntries(request.questions.map((question, index) => {
-      const explicitAnswer = explicit.get(question.id);
-      const fallback = request.questions.length === 1 ? input.text : lines[index] ?? (index === 0 ? input.text : "");
-      return [question.id, { answers: [explicitAnswer ?? fallback].filter(Boolean) }];
-    })),
+    answers: Object.fromEntries(
+      Object.entries(answers).map(([key, value]) => [key, { answers: [value].filter(Boolean) }])
+    ),
+  };
+}
+
+function parseMcpElicitationQuestions(message: JsonRecord): {
+  questions: UserInputQuestion[];
+  responseKind: PendingUserInputRequest["responseKind"];
+} {
+  const params = isRecord(message.params) ? message.params : {};
+  const mode = readString(params.mode);
+  const prompt = readString(params.message) ?? "The MCP server requires additional information.";
+  if (mode === "url") {
+    const url = readString(params.url);
+    return {
+      responseKind: "mcp-elicitation-url",
+      questions: [{
+        id: "confirmation",
+        header: "MCP authorization",
+        question: [prompt, url].filter(Boolean).join("\n"),
+        options: [],
+      }],
+    };
+  }
+
+  const requestedSchema = isRecord(params.requestedSchema) ? params.requestedSchema : {};
+  const properties = isRecord(requestedSchema.properties) ? requestedSchema.properties : {};
+  const questions = Object.entries(properties).flatMap(([id, rawProperty]) => {
+    if (!isRecord(rawProperty)) return [];
+    const values = Array.isArray(rawProperty.enum)
+      ? rawProperty.enum.filter((value): value is string => typeof value === "string")
+      : [];
+    return [{
+      id,
+      header: readString(rawProperty.title),
+      question: readString(rawProperty.description) ?? `${prompt}\n${id}`,
+      options: values.map((value) => ({ label: value, description: null })),
+    }];
+  });
+
+  return {
+    responseKind: "mcp-elicitation-form",
+    questions: questions.length
+      ? questions
+      : [{ id: "value", header: null, question: prompt, options: [] }],
   };
 }
 
@@ -160,14 +219,95 @@ function extractAgentText(item: JsonRecord | null) {
   return text || null;
 }
 
+const sensitiveKeyPattern = /api[-_]?key|authorization|bearer|cookie|password|secret|token/i;
+const sensitiveValuePattern = /(Bearer\s+)[^\s"']+|\bsk-[A-Za-z0-9_-]{8,}\b/gi;
+
+function redactAuditValue(value: unknown, key: string | null = null): unknown {
+  if (key && sensitiveKeyPattern.test(key)) return "[REDACTED]";
+  if (typeof value === "string") {
+    return value.replace(sensitiveValuePattern, (_match, bearerPrefix) =>
+      bearerPrefix ? `${bearerPrefix}[REDACTED]` : "[REDACTED]"
+    );
+  }
+  if (Array.isArray(value)) return value.map((item) => redactAuditValue(item));
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([entryKey, entryValue]) => [
+      entryKey,
+      redactAuditValue(entryValue, entryKey),
+    ])
+  );
+}
+
+function serializeAuditValue(value: unknown) {
+  if (value == null) return null;
+  const redacted = redactAuditValue(value);
+  const serialized = typeof redacted === "string" ? redacted : JSON.stringify(redacted);
+  if (!serialized.trim()) return null;
+  return serialized.length > 4_000 ? `${serialized.slice(0, 3_997)}...` : serialized;
+}
+
+function byteLength(value: unknown) {
+  if (value == null) return null;
+  try {
+    return Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value), "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function extractMcpCallObservation(
+  item: JsonRecord | null,
+  context: BridgeSessionContext,
+  finishedAt: string
+): McpCallObservation | null {
+  if (!item || readString(item.type) !== "mcpToolCall") return null;
+  const bindingRef = readString(item.server);
+  const toolName = readString(item.tool);
+  if (!bindingRef || !toolName) return null;
+  const binding = context.mcpBindings.find(
+    (candidate) => candidate.bindingId === bindingRef || candidate.mcpId === bindingRef
+  );
+  if (!binding) return null;
+
+  const durationMs = typeof item.durationMs === "number" && item.durationMs >= 0
+    ? Math.round(item.durationMs)
+    : null;
+  const finishedTimestamp = new Date(finishedAt).getTime();
+  const startedAt = durationMs == null || !Number.isFinite(finishedTimestamp)
+    ? finishedAt
+    : new Date(finishedTimestamp - durationMs).toISOString();
+  const error = isRecord(item.error) ? item.error : null;
+  const status = readString(item.status);
+
+  return {
+    callId: readString(item.id) ?? undefined,
+    mcpId: binding.mcpId,
+    bindingId: binding.bindingId,
+    toolName,
+    requestId: readString(item.id),
+    status: status === "failed" ? "error" : status === "completed" ? "success" : "cancelled",
+    startedAt,
+    finishedAt,
+    durationMs,
+    inputSummary: serializeAuditValue(item.arguments),
+    outputSummary: serializeAuditValue(item.result),
+    errorMessage: serializeAuditValue(error?.message),
+    inputBytes: byteLength(item.arguments),
+    outputBytes: byteLength(item.result),
+  };
+}
+
 export class AppServerSession implements AgentSession {
   #options: Required<Pick<AppServerSessionOptions, "context" | "launch" | "emit">> & {
     now: () => string;
     requestTimeoutMs: number;
     includeDefaultAppServerArgs: boolean;
+    observeMcpCall?: (observation: McpCallObservation) => void;
   };
   #process: ChildProcessWithoutNullStreams | null = null;
   #runtimeEnv: Record<string, string> = {};
+  #threadConfig: JsonRecord = {};
   #stdoutBuffer = "";
   #stderrBuffer = "";
   #nextRequestId = 1;
@@ -203,6 +343,7 @@ export class AppServerSession implements AgentSession {
       now: options.now ?? (() => new Date().toISOString()),
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
       includeDefaultAppServerArgs: options.includeDefaultAppServerArgs ?? true,
+      observeMcpCall: options.observeMcpCall,
     };
     this.#sequence = Date.now() * 1_000 + Math.floor(Math.random() * 1_000);
     this.#approvalMode = options.context.approvalMode;
@@ -211,6 +352,10 @@ export class AppServerSession implements AgentSession {
 
   setRuntimeEnv(env: Record<string, string>) {
     this.#runtimeEnv = { ...this.#runtimeEnv, ...env };
+  }
+
+  setThreadConfig(config: Record<string, unknown>) {
+    this.#threadConfig = { ...this.#threadConfig, ...config };
   }
 
   async start() {
@@ -251,6 +396,7 @@ export class AppServerSession implements AgentSession {
       approvalPolicy: "on-request",
       sandbox: "workspace-write",
       experimentalRawEvents: true,
+      config: this.#threadConfig,
     });
     if (isRecord(threadResult)) {
       this.#threadId = extractThreadId({ result: threadResult }) ?? this.#threadId;
@@ -523,6 +669,14 @@ export class AppServerSession implements AgentSession {
       const item = extractItem(message);
       const text = extractAgentText(item);
       if (text) this.#emitAgentMessage(text, readString(item?.id));
+      const observation = extractMcpCallObservation(
+        item,
+        this.#options.context,
+        this.#options.now()
+      );
+      if (observation) this.#options.observeMcpCall?.(observation);
+    } else if (method === "mcpServer/elicitation/request") {
+      this.#emitMcpElicitationRequest(message);
     } else if (method?.includes("requestApproval") || method === "item/tool/requestApproval") {
       this.#emitApprovalRequest(message);
     } else if (method === "item/tool/requestUserInput") {
@@ -571,7 +725,15 @@ export class AppServerSession implements AgentSession {
     }));
   }
 
-  #emitApprovalRequest(message: JsonRecord) {
+  #emitApprovalRequest(
+    message: JsonRecord,
+    overrides: {
+      kind?: RunApproval["kind"];
+      prompt?: string;
+      relatedResourceRef?: string | null;
+      responseKind?: PendingApprovalRequest["responseKind"];
+    } = {}
+  ) {
     if (message.id == null) return;
     const approvalId = `apr_${randomUUID()}`;
     const params = isRecord(message.params) ? message.params : {};
@@ -579,12 +741,13 @@ export class AppServerSession implements AgentSession {
     const requestedAt = this.#options.now();
     const pending = {
       requestId: message.id as JsonRpcId,
+      responseKind: overrides.responseKind ?? "decision",
       approval: runApprovalSchema.parse({
         approvalId,
         runId: this.#options.context.runId,
-        kind: "general",
-        relatedResourceRef: readString(params.itemId),
-        prompt,
+        kind: overrides.kind ?? "general",
+        relatedResourceRef: overrides.relatedResourceRef ?? readString(params.itemId),
+        prompt: overrides.prompt ?? prompt,
         state: "pending",
         requestedAt,
         decidedAt: null,
@@ -623,7 +786,14 @@ export class AppServerSession implements AgentSession {
     this.#approvalRequests.delete(approvalId);
     this.#decidedApprovals.set(approvalId, approved);
     this.#lastApprovalAt = this.#options.now();
-    this.#respond(pending.requestId, { decision: approved ? "accept" : "decline" });
+    this.#respond(
+      pending.requestId,
+      pending.responseKind === "mcp-elicitation"
+        ? approved
+          ? { action: "accept", content: {} }
+          : { action: "decline" }
+        : { decision: approved ? "accept" : "decline" }
+    );
 
     if (emitDecision) {
       this.#options.emit(bridgeEventSchema.parse({
@@ -652,10 +822,39 @@ export class AppServerSession implements AgentSession {
     const request: PendingUserInputRequest = {
       requestId: message.id as JsonRpcId,
       questions,
+      responseKind: "codex-user-input",
     };
     this.#userInputRequests.set(String(request.requestId), request);
     this.#setConnectionState("waiting_input");
     this.#emitAgentMessage(formatUserInputQuestions(questions), null, "prompt");
+  }
+
+  #emitMcpElicitationRequest(message: JsonRecord) {
+    if (message.id == null) return;
+    const params = isRecord(message.params) ? message.params : {};
+    const metadata = isRecord(params._meta) ? params._meta : {};
+    if (readString(metadata.codex_approval_kind) === "mcp_tool_call") {
+      const serverName = readString(params.serverName);
+      const toolDescription = readString(metadata.tool_description);
+      this.#emitApprovalRequest(message, {
+        kind: "mcp-access",
+        responseKind: "mcp-elicitation",
+        relatedResourceRef: serverName,
+        prompt: readString(params.message) ??
+          `Allow ${serverName ?? "the MCP server"} to execute${toolDescription ? ` ${toolDescription}` : " this tool"}?`,
+      });
+      return;
+    }
+
+    const parsed = parseMcpElicitationQuestions(message);
+    const request: PendingUserInputRequest = {
+      requestId: message.id as JsonRpcId,
+      questions: parsed.questions,
+      responseKind: parsed.responseKind,
+    };
+    this.#userInputRequests.set(String(request.requestId), request);
+    this.#setConnectionState("waiting_input");
+    this.#emitAgentMessage(formatUserInputQuestions(request.questions), null, "prompt");
   }
 
   #setConnectionState(state: AgentRuntimeConnectionState) {

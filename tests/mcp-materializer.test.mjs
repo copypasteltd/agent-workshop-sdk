@@ -119,6 +119,14 @@ test("McpMaterializer materializes remote MCP bindings when runtime policies are
     const result = await materializer.materialize();
     assert.equal(result.config.servers.mbd_seedance_policy_ok.type, "remote-managed");
     assert.equal(result.config.servers.mbd_seedance_policy_ok.url, "https://mcp.workspace.internal/seedance");
+    assert.deepEqual(result.codexThreadConfig.mcp_servers.mbd_seedance_policy_ok, {
+      enabled: true,
+      required: true,
+      startup_timeout_sec: 30,
+      tool_timeout_sec: 120,
+      default_tools_approval_mode: "auto",
+      url: "https://mcp.workspace.internal/seedance",
+    });
   } finally {
     await fs.rm(runtimeDir, { recursive: true, force: true });
   }
@@ -242,6 +250,7 @@ test("McpMaterializer materializes stdio MCP bindings when the ref matches the c
         targetPath: runtimeDir,
         initialPrompt: "hello",
         requestedInitialMessage: null,
+        approvalMode: "auto_all",
         credentialMounts: [],
         mcpBindings: [
           {
@@ -259,7 +268,7 @@ test("McpMaterializer materializes stdio MCP bindings when the ref matches the c
             authMode: null,
             authRef: null,
             networkPolicyRef: null,
-            approvalRequired: false,
+            approvalRequired: true,
           },
         ],
         mcpNetworkPolicies: [],
@@ -272,6 +281,15 @@ test("McpMaterializer materializes stdio MCP bindings when the ref matches the c
     assert.deepEqual(result.config.servers.mbd_stdio_allowed.args, [
       stdioFixture.filePath,
     ]);
+    assert.deepEqual(result.codexThreadConfig.mcp_servers.mbd_stdio_allowed, {
+      enabled: true,
+      required: true,
+      startup_timeout_sec: 30,
+      tool_timeout_sec: 120,
+      default_tools_approval_mode: "auto",
+      command: "node",
+      args: [stdioFixture.filePath],
+    });
   } finally {
     await fs.rm(runtimeDir, { recursive: true, force: true });
   }

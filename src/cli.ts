@@ -293,6 +293,7 @@ async function main() {
       restartBackoffMs: cliConfig.codexRestartBackoffMs,
       restartResetWindowMs: cliConfig.codexRestartResetWindowMs,
       appServerRequestTimeoutMs: cliConfig.codexAppServerRequestTimeoutMs,
+      appServerIncludeDefaultArgs: cliConfig.codexAppServerIncludeDefaultArgs,
     },
   });
 

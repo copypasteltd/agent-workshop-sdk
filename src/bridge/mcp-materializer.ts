@@ -22,6 +22,25 @@ type MaterializedMcpServer =
       auth_file?: string;
     };
 
+type CodexMcpServer = {
+  enabled: true;
+  required: true;
+  startup_timeout_sec: number;
+  tool_timeout_sec: number;
+  default_tools_approval_mode: "auto" | "prompt";
+} & (
+  | {
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+      env_vars?: string[];
+    }
+  | {
+      url: string;
+      bearer_token_env_var?: string;
+    }
+);
+
 type McpMaterializerOptions = {
   context: BridgeSessionContext;
   runtimeDir: string;
@@ -77,6 +96,45 @@ function buildServerDefinition(
   };
 }
 
+function buildCodexServerDefinition(
+  binding: BridgeSessionContext["mcpBindings"][number],
+  materialized: MaterializedMcpServer,
+  approvalMode: BridgeSessionContext["approvalMode"]
+): CodexMcpServer {
+  const governance = {
+    enabled: true as const,
+    required: true as const,
+    startup_timeout_sec: 30,
+    tool_timeout_sec: 120,
+    default_tools_approval_mode:
+      approvalMode === "auto_all" || !binding.approvalRequired
+        ? "auto" as const
+        : "prompt" as const,
+  };
+
+  if (materialized.type === "local-process") {
+    return {
+      ...governance,
+      command: materialized.command,
+      ...(materialized.args?.length ? { args: materialized.args } : {}),
+      ...(binding.authMode === "env" && binding.authRef
+        ? { env_vars: [binding.authRef] }
+        : {}),
+      ...(binding.authMode === "file" && binding.authRef
+        ? { env: { LINGBAN_MCP_AUTH_FILE: binding.authRef } }
+        : {}),
+    };
+  }
+
+  return {
+    ...governance,
+    url: materialized.url,
+    ...(binding.authMode === "env" && binding.authRef
+      ? { bearer_token_env_var: binding.authRef }
+      : {}),
+  };
+}
+
 export class McpMaterializer {
   #options: McpMaterializerOptions;
 
@@ -95,11 +153,20 @@ export class McpMaterializer {
       bindings: this.#options.context.mcpBindings,
     });
 
+    const materializedServers = this.#options.context.mcpBindings.map((binding) => {
+      const server = buildServerDefinition(binding, this.#options);
+      return { binding, server };
+    });
     const config = {
       servers: Object.fromEntries(
-        this.#options.context.mcpBindings.map((binding) => [
+        materializedServers.map(({ binding, server }) => [binding.bindingId, server])
+      ),
+    };
+    const codexThreadConfig = {
+      mcp_servers: Object.fromEntries(
+        materializedServers.map(({ binding, server }) => [
           binding.bindingId,
-          buildServerDefinition(binding, this.#options),
+          buildCodexServerDefinition(binding, server, this.#options.context.approvalMode),
         ])
       ),
     };
@@ -125,6 +192,7 @@ export class McpMaterializer {
       bindingsPath,
       auditLogPath,
       config,
+      codexThreadConfig,
       bindings,
     };
   }

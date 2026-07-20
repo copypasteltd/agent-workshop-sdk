@@ -36,6 +36,7 @@ export class McpCallAuditWatcher {
   #lastCallId: string | null = null;
   #lastErrorAt: string | null = null;
   #lastErrorMessage: string | null = null;
+  #processedCallIds = new Set<string>();
 
   constructor(options: McpCallAuditWatcherOptions) {
     this.#options = {
@@ -105,7 +106,7 @@ export class McpCallAuditWatcher {
 
       for (const rawLine of lines.map((line) => line.trim()).filter(Boolean)) {
         try {
-          this.#emitObservation(rawLine);
+          this.ingest(JSON.parse(rawLine) as unknown);
         } catch (error) {
           this.#processedFailuresTotal += 1;
           this.#lastErrorAt = this.#options.now();
@@ -120,9 +121,12 @@ export class McpCallAuditWatcher {
     }
   }
 
-  #emitObservation(rawLine: string) {
-    const parsed = mcpCallObservationSchema.parse(JSON.parse(rawLine) as unknown);
+  ingest(observation: unknown) {
+    const parsed = mcpCallObservationSchema.parse(observation);
     const callId = buildCallId(parsed);
+    if (this.#processedCallIds.has(callId)) {
+      return;
+    }
     const binding =
       (parsed.bindingId
         ? this.#options.context.mcpBindings.find((item) => item.bindingId === parsed.bindingId)
@@ -164,6 +168,11 @@ export class McpCallAuditWatcher {
     };
 
     this.#processedEventsTotal += 1;
+    this.#processedCallIds.add(callId);
+    if (this.#processedCallIds.size > 2_000) {
+      const oldestCallId = this.#processedCallIds.values().next().value;
+      if (oldestCallId) this.#processedCallIds.delete(oldestCallId);
+    }
     this.#lastProcessedAt = recordedAt;
     this.#lastCallId = callId;
     this.#lastErrorAt = null;

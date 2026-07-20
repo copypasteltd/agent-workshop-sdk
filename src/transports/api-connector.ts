@@ -34,6 +34,12 @@ function trimTrailingSlash(value: string) {
   return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
+function describeTransportError(error: unknown) {
+  const message = toErrorMessage(error);
+  if (!(error instanceof Error) || !(error.cause instanceof Error)) return message;
+  return `${message}: ${error.cause.message}`;
+}
+
 export class ApiConnector {
   #baseUrl: string;
   #authToken?: string;
@@ -300,19 +306,27 @@ export class ApiConnector {
     }, this.#requestTimeoutMs);
 
     try {
-      const response = await fetch(`${this.#baseUrl}${pathname}`, {
-        method: options.method,
-        headers: {
-          ...(options.body ? { "content-type": "application/json" } : {}),
-          ...(this.#authToken ? { "x-lingban-internal-token": this.#authToken } : {}),
-          ...(options.traceId ? { "x-lingban-trace-id": options.traceId } : {}),
-          ...(options.idempotencyKey
-            ? { "x-lingban-idempotency-key": options.idempotencyKey }
-            : {}),
-        },
-        ...(options.body ? { body: JSON.stringify(options.body) } : {}),
-        signal: controller.signal,
-      });
+      let response: Response;
+      try {
+        response = await fetch(`${this.#baseUrl}${pathname}`, {
+          method: options.method,
+          headers: {
+            ...(options.body ? { "content-type": "application/json" } : {}),
+            ...(this.#authToken ? { "x-lingban-internal-token": this.#authToken } : {}),
+            ...(options.traceId ? { "x-lingban-trace-id": options.traceId } : {}),
+            ...(options.idempotencyKey
+              ? { "x-lingban-idempotency-key": options.idempotencyKey }
+              : {}),
+          },
+          ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+          signal: controller.signal,
+        });
+      } catch (error) {
+        throw new Error(
+          `API connector ${options.method} ${this.#baseUrl}${pathname} failed: ${describeTransportError(error)}`,
+          { cause: error }
+        );
+      }
 
       if (!response.ok) {
         const text = await response.text();
