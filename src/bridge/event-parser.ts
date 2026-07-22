@@ -6,9 +6,12 @@ import {
   type MessageRole,
 } from "@lingban/contracts";
 import { randomUUID } from "node:crypto";
+import { extractAgentImageAttachments } from "./agent-message-images.js";
 
 type EventParserOptions = {
   runId: string;
+  targetPath: string;
+  cwd?: string;
   emit: (event: BridgeEvent) => void;
   now?: () => string;
 };
@@ -28,7 +31,8 @@ function createMessageEvent(
   role: MessageRole,
   kind: MessageKind,
   text: string,
-  createdAt: string
+  createdAt: string,
+  attachments = [] as ReturnType<typeof extractAgentImageAttachments>
 ): BridgeEvent {
   return bridgeEventSchema.parse({
     type: "conversation.message",
@@ -38,7 +42,7 @@ function createMessageEvent(
       role,
       kind,
       text,
-      attachments: [],
+      attachments,
       createdAt,
     }),
   });
@@ -52,6 +56,7 @@ export class EventParser {
   constructor(options: EventParserOptions) {
     this.#options = {
       ...options,
+      cwd: options.cwd ?? options.targetPath,
       now: options.now ?? (() => new Date().toISOString()),
     };
   }
@@ -112,7 +117,17 @@ export class EventParser {
     const createdAt = this.#options.now();
     const event =
       channel === "stdout"
-        ? createMessageEvent(this.#options.runId, "agent", "text", line, createdAt)
+        ? createMessageEvent(
+            this.#options.runId,
+            "agent",
+            "text",
+            line,
+            createdAt,
+            extractAgentImageAttachments(line, {
+              targetPath: this.#options.targetPath,
+              cwd: this.#options.cwd,
+            })
+          )
         : createMessageEvent(this.#options.runId, "system", "status", line, createdAt);
 
     this.#options.emit(event);

@@ -128,9 +128,9 @@ For `deferInitialTurn=true`, Bridge creates the Codex Thread and stays idle. The
 
 As of 2026-07-17, the bridge uses Codex App Server as the primary structured protocol and retains a controlled PTY rollback adapter. Recovery, MCP materialization, secret injection, API integration, and runtime diagnostics remain available.
 
-最新原生测试结果：26/26 通过。
+最新原生测试结果：32/32 通过。
 
-Latest native test result: 26/26 passed.
+Latest native test result: 32/32 passed.
 
 生产深化项包括长时会话压力测试、Codex CLI 多版本兼容矩阵、第三方 MCP 故障注入、Run-scoped 密钥轮换和断网恢复演练。
 
@@ -141,3 +141,15 @@ Production hardening covers long-running session load tests, a Codex CLI version
 Bridge 原生测试 `29/29` 通过。Bridge 将已解析 MCP 写入 Codex 原生 `mcp_servers` Thread 配置，处理 MCP 启动状态、工具调用、`elicitation` 审批和 `auto_all` 自动审批，并将调用结果按 Call ID 去重后写入平台审计。真实 Playwright MCP 已在 Runner 中报告 `ready` 并完成工具调用。
 
 Native bridge tests pass `29/29`. Resolved MCP servers are injected through the Codex App Server thread configuration, with startup status, tool calls, elicitation approvals, automatic approval, deduplicated audit events, and sensitive-value redaction.
+
+## 2026-07-22 Agent 图片关联 / Agent Image Association
+
+App Server 与 legacy PTY 两条消息链均会识别 Agent 输出中的 Markdown 图片、HTML `img`、普通相对路径和纯图片文件名。解析结果写入 `conversation.message.attachments`，路径统一转换为当前 Run `targetPath` 下的逻辑相对路径。
+
+解析器拒绝 HTTP、data URL、blob URL、目录越界和 target path 外部路径。文件可以在消息事件之后完成写入；移动端会在受限时间内等待文件索引，再通过后端预览票据读取实际内容。
+
+Both runtime protocols associate agent-local image references with persisted conversation messages. The bridge emits only validated target-relative attachment paths and leaves file authorization, indexing, and delivery to the backend file chain.
+
+最新原生测试结果：32/32 通过。
+
+Latest native test result: 32/32 passed.

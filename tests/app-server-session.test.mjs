@@ -101,6 +101,52 @@ reader.on("line", (line) => {
   }
 });
 
+test("AppServerSession resolves local image references into target-relative attachments", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "lingban-app-server-images-"));
+  const fixturePath = path.join(root, "fake-app-server.mjs");
+  await writeFile(fixturePath, `
+import readline from "node:readline";
+const reader = readline.createInterface({ input: process.stdin });
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+reader.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") send({ id: message.id, result: { protocolVersion: "test-images" } });
+  if (message.method === "thread/start") send({ id: message.id, result: { thread: { id: "thr_images" } } });
+  if (message.method === "turn/start") {
+    send({ id: message.id, result: { turn: { id: "turn_images" } } });
+    send({ method: "item/completed", params: { threadId: "thr_images", turnId: "turn_images", item: {
+      id: "item_images",
+      type: "agentMessage",
+      text: "Generated images:\\n![cover](./outputs/cover.png)\\n" + ${JSON.stringify("`./outputs/detail.webp`")} + "\\n![blocked](../outside.png)"
+    } } });
+    send({ method: "turn/completed", params: { threadId: "thr_images", turn: { id: "turn_images", status: "completed" } } });
+  }
+});
+`, "utf8");
+
+  const events = [];
+  const session = new AppServerSession({
+    context: createContext(root, "run_app_server_images", "wsp_app_server_images"),
+    launch: { command: process.execPath, args: [fixturePath], cwd: root },
+    emit: (event) => events.push(event),
+    requestTimeoutMs: 10_000,
+    includeDefaultAppServerArgs: false,
+  });
+
+  try {
+    await session.start();
+    await waitFor(() => events.some((event) => event.type === "conversation.message"));
+    const event = events.find((item) => item.type === "conversation.message");
+    assert.deepEqual(event.message.attachments, [
+      { path: "outputs/cover.png", label: "cover", slotKey: null },
+      { path: "outputs/detail.webp", label: "detail.webp", slotKey: null },
+    ]);
+  } finally {
+    await session.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("AppServerSession answers structured input and steers an active turn", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "lingban-app-server-input-"));
   const fixturePath = path.join(root, "fake-app-server.mjs");

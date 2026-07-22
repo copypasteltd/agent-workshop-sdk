@@ -169,6 +169,8 @@ export class CodexSession {
     };
     this.#parser = new EventParser({
       runId: options.context.runId,
+      targetPath: options.context.targetPath,
+      cwd: options.launch.cwd,
       emit: options.emit,
       now: this.#options.now,
     });
