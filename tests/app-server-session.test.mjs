@@ -117,7 +117,7 @@ reader.on("line", (line) => {
     send({ method: "item/completed", params: { threadId: "thr_images", turnId: "turn_images", item: {
       id: "item_images",
       type: "agentMessage",
-      text: "Generated images:\\n![cover](./outputs/cover.png)\\n" + ${JSON.stringify("`./outputs/detail.webp`")} + "\\n![blocked](../outside.png)"
+      text: "Generated media:\\n![cover](./outputs/cover.png)\\n" + ${JSON.stringify("`./outputs/detail.webp`")} + "\\n[episode](./outputs/episode.mp4)\\n![blocked](../outside.png)\\n[blocked video](../outside.webm)"
     } } });
     send({ method: "turn/completed", params: { threadId: "thr_images", turn: { id: "turn_images", status: "completed" } } });
   }
@@ -140,6 +140,7 @@ reader.on("line", (line) => {
     assert.deepEqual(event.message.attachments, [
       { path: "outputs/cover.png", label: "cover", slotKey: null },
       { path: "outputs/detail.webp", label: "detail.webp", slotKey: null },
+      { path: "outputs/episode.mp4", label: "episode", slotKey: null },
     ]);
   } finally {
     await session.stop();

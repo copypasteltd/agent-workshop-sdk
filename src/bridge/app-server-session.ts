@@ -17,7 +17,7 @@ import {
 } from "@lingban/contracts";
 import type { CodexSessionDiagnostics } from "../observability.js";
 import type { AgentSession } from "./agent-session.js";
-import { extractAgentImageAttachments } from "./agent-message-images.js";
+import { extractAgentMediaAttachments } from "./agent-message-images.js";
 
 type JsonRpcId = string | number;
 type JsonRecord = Record<string, unknown>;
@@ -708,7 +708,7 @@ export class AppServerSession implements AgentSession {
   }
 
   #emitAgentMessage(text: string, itemId: string | null, kind: "text" | "prompt" = "text") {
-    const attachments = extractAgentImageAttachments(text, {
+    const attachments = extractAgentMediaAttachments(text, {
       targetPath: this.#options.context.targetPath,
       cwd: this.#options.launch.cwd,
     });

@@ -6,7 +6,7 @@ import {
   type MessageRole,
 } from "@lingban/contracts";
 import { randomUUID } from "node:crypto";
-import { extractAgentImageAttachments } from "./agent-message-images.js";
+import { extractAgentMediaAttachments } from "./agent-message-images.js";
 
 type EventParserOptions = {
   runId: string;
@@ -32,7 +32,7 @@ function createMessageEvent(
   kind: MessageKind,
   text: string,
   createdAt: string,
-  attachments = [] as ReturnType<typeof extractAgentImageAttachments>
+  attachments = [] as ReturnType<typeof extractAgentMediaAttachments>
 ): BridgeEvent {
   return bridgeEventSchema.parse({
     type: "conversation.message",
@@ -123,7 +123,7 @@ export class EventParser {
             "text",
             line,
             createdAt,
-            extractAgentImageAttachments(line, {
+            extractAgentMediaAttachments(line, {
               targetPath: this.#options.targetPath,
               cwd: this.#options.cwd,
             })

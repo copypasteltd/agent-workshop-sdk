@@ -132,6 +132,18 @@ As of 2026-07-17, the bridge uses Codex App Server as the primary structured pro
 
 Latest native test result: 32/32 passed.
 
+## 2026-07-23 Agent 视频关联 / Agent Video Association
+
+App Server 与 legacy PTY 消息链现已识别 Markdown 视频链接、HTML `video/source`、普通相对路径和纯视频文件名。支持 `mp4/webm/mov/m4v/ogv/ogg`，输出附件按 Agent 原文出现顺序写入 `conversation.message.attachments`。
+
+视频路径与图片使用同一 target path 边界：HTTP、data、blob、目录越界和 Run 目标目录外路径会被拒绝。Bridge 仅提交逻辑相对路径，文件存在性、索引、授权和传输由后端文件链处理。
+
+Both runtime protocols associate validated agent-local video references with conversation messages while preserving source order and target-directory confinement.
+
+最新原生测试结果：33/33 通过。
+
+Latest native test result: 33/33 passed.
+
 生产深化项包括长时会话压力测试、Codex CLI 多版本兼容矩阵、第三方 MCP 故障注入、Run-scoped 密钥轮换和断网恢复演练。
 
 Production hardening covers long-running session load tests, a Codex CLI version matrix, third-party MCP fault injection, run-scoped secret rotation, and network interruption recovery drills.

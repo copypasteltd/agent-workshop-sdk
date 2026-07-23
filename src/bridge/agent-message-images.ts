@@ -2,11 +2,14 @@ import path from "node:path";
 import type { RunConversationAttachment } from "@lingban/contracts";
 
 const imageExtensionPattern = /\.(?:png|jpe?g|gif|webp|svg)(?:[?#].*)?$/i;
+const videoExtensionPattern = /\.(?:mp4|webm|mov|m4v|ogv|ogg)(?:[?#].*)?$/i;
+const mediaExtensionPattern = /\.(?:png|jpe?g|gif|webp|svg|mp4|webm|mov|m4v|ogv|ogg)(?:[?#].*)?$/i;
 const remoteSourcePattern = /^(?:https?:|data:|blob:|\/\/|#)/i;
 
 type ImageCandidate = {
   label: string | null;
   source: string;
+  index: number;
 };
 
 function decodeImageSource(value: string) {
@@ -76,6 +79,7 @@ function collectMarkdownImages(text: string) {
     candidates.push({
       label: text.slice(start + 2, altEnd).trim() || null,
       source: markdownDestination(text.slice(altEnd + 2, index)),
+      index: start,
     });
     cursor = index + 1;
   }
@@ -83,30 +87,56 @@ function collectMarkdownImages(text: string) {
   return candidates;
 }
 
+function collectMarkdownVideoLinks(text: string) {
+  const candidates: ImageCandidate[] = [];
+  const pattern = /(^|[^!])\[([^\]]*)\]\(([^)\n]+)\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    const source = markdownDestination(match[3] ?? "");
+    if (!videoExtensionPattern.test(source)) continue;
+    candidates.push({
+      label: match[2]?.trim() || null,
+      source,
+      index: match.index + (match[1]?.length ?? 0),
+    });
+  }
+  return candidates;
+}
+
 function collectHtmlImages(text: string) {
   const candidates: ImageCandidate[] = [];
   const pattern = /<img\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1[^>]*>/gi;
   for (const match of text.matchAll(pattern)) {
-    candidates.push({ label: null, source: match[2] ?? "" });
+    candidates.push({ label: null, source: match[2] ?? "", index: match.index });
+  }
+  return candidates;
+}
+
+function collectHtmlVideos(text: string) {
+  const candidates: ImageCandidate[] = [];
+  const pattern = /<(?:video|source)\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1[^>]*>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    candidates.push({ label: null, source: match[2] ?? "", index: match.index });
   }
   return candidates;
 }
 
 function collectPathMentions(text: string) {
   const candidates: ImageCandidate[] = [];
-  const pattern = /(?:^|[\s'"`(:])((?:\.\.\/|\.\/|\/workspace\/target\/|(?:[\w.-]+\/)+)?[\w.-]+\.(?:png|jpe?g|gif|webp|svg)(?:[?#][^\s<>"'`]*)?)/gim;
+  const pattern = /(?:^|[\s'"`(:])((?:\.\.\/|\.\/|\/workspace\/target\/|(?:[\w.-]+\/)+)?[\w.-]+\.(?:png|jpe?g|gif|webp|svg|mp4|webm|mov|m4v|ogv|ogg)(?:[?#][^\s<>"'`]*)?)/gim;
   for (const match of text.matchAll(pattern)) {
-    candidates.push({ label: null, source: match[1] ?? "" });
+    candidates.push({ label: null, source: match[1] ?? "", index: match.index });
   }
   return candidates;
 }
 
-export function resolveAgentImagePath(
+export function resolveAgentMediaPath(
   source: string,
   options: { targetPath: string; cwd?: string }
 ) {
   const decoded = decodeImageSource(source).replace(/\\/g, "/");
-  if (!decoded || remoteSourcePattern.test(decoded) || !imageExtensionPattern.test(decoded)) {
+  if (!decoded || remoteSourcePattern.test(decoded) || !mediaExtensionPattern.test(decoded)) {
     return null;
   }
 
@@ -126,19 +156,28 @@ export function resolveAgentImagePath(
   return relativePath.replace(/\\/g, "/");
 }
 
-export function extractAgentImageAttachments(
+export function resolveAgentImagePath(
+  source: string,
+  options: { targetPath: string; cwd?: string }
+) {
+  return imageExtensionPattern.test(source) ? resolveAgentMediaPath(source, options) : null;
+}
+
+export function extractAgentMediaAttachments(
   text: string,
   options: { targetPath: string; cwd?: string }
 ): RunConversationAttachment[] {
   const result = new Map<string, RunConversationAttachment>();
   const candidates = [
     ...collectMarkdownImages(text),
+    ...collectMarkdownVideoLinks(text),
     ...collectHtmlImages(text),
+    ...collectHtmlVideos(text),
     ...collectPathMentions(text),
-  ];
+  ].sort((left, right) => left.index - right.index);
 
   for (const candidate of candidates) {
-    const logicalPath = resolveAgentImagePath(candidate.source, options);
+    const logicalPath = resolveAgentMediaPath(candidate.source, options);
     if (!logicalPath || result.has(logicalPath)) continue;
     result.set(logicalPath, {
       path: logicalPath,
@@ -148,4 +187,13 @@ export function extractAgentImageAttachments(
   }
 
   return [...result.values()];
+}
+
+export function extractAgentImageAttachments(
+  text: string,
+  options: { targetPath: string; cwd?: string }
+) {
+  return extractAgentMediaAttachments(text, options).filter((attachment) =>
+    imageExtensionPattern.test(attachment.path)
+  );
 }
